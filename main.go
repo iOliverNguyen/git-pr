@@ -67,7 +67,7 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	}
 
 	pushCommit := func(commit *Commit) (logs string, execFunc func()) {
-		args := fmt.Sprintf("head:refs/heads/%v", commit.GetAttr(KeyRemoteRef))
+		args := fmt.Sprintf("%v:refs/heads/%v", commit.ShortHash(), commit.GetAttr(KeyRemoteRef))
 		logs = fmt.Sprintf("push -f %v %v", config.Remote, args)
 		return logs, func() {
 			out := must(execGit("push", "-f", config.Remote, args))
@@ -80,14 +80,11 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	// create a PR for each commit with missing remote ref, one by one
 	lastPRNumber := must(githubGetLastPRNumber())
 	for _, commit := range commitsWithoutRemoteRef {
-		debugf("creating remote ref for %v", commit.Title)
-		must(execGit("checkout", commit.Hash))
-
 		lastPRNumber++
 		remoteRef := fmt.Sprintf("%v/pr%v", config.User, lastPRNumber)
 		commit.SetAttr(KeyRemoteRef, remoteRef)
-		must(execGit("commit", "--amend", "-m", commit.FullMessage()))
-		must(execGit("restack"))
+		debugf("creating remote ref %v for %v", remoteRef, commit.Title)
+		must(execGit("reword", commit.Hash, "-m", commit.FullMessage()))
 	}
 
 	// push commits, concurrently

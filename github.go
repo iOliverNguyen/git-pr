@@ -15,7 +15,7 @@ type NewPRBody struct {
 }
 
 func githubGetLastPRNumber() (int, error) {
-	ghURL := fmt.Sprintf("https://api.github.com/repos/%v/pulls?state=all&sort=created&direction=desc&per_page=1", config.Repo)
+	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls?state=all&sort=created&direction=desc&per_page=1", config.Host, config.Repo)
 	jsonBody, err := httpGET(ghURL)
 	if err != nil {
 		return 0, err
@@ -35,7 +35,7 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 		} `json:"head"`
 	}
 
-	ghURL := fmt.Sprintf("https://api.github.com/repos/%v/commits/%v/pulls?per_page=100", config.Repo, commit.Hash)
+	ghURL := fmt.Sprintf("https://api.%v/repos/%v/commits/%v/pulls?per_page=100", config.Host, config.Repo, commit.Hash)
 	jsonBody, err := httpGET(ghURL)
 	if err != nil {
 		return 0, err
@@ -56,7 +56,7 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 
 func githubCreatePRForCommit(commit *Commit) error {
 	// attempt to create new PR
-	ghURL := fmt.Sprintf("https://api.github.com/repos/%v/pulls", config.Repo)
+	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls", config.Host, config.Repo)
 	body := NewPRBody{
 		Title: commit.Title,
 		Body:  commit.Message,

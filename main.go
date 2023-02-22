@@ -132,18 +132,19 @@ Hint: use "git add ." and "git stash" to clean up the repository
 		wg.Add(len(stackedCommits))
 		for _, commit := range stackedCommits {
 			commit := commit
-			fmt.Printf("update pull request %v\n", commit.PRNumber)
+			prURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, commit.PRNumber)
+			fmt.Printf("update pull request %v\n", prURL)
 			go func() {
 				defer wg.Done()
 
-				pullURL := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%v", config.Repo, commit.PRNumber)
-				reviewURL := fmt.Sprintf("https://github.com/%s/pull/%v/commits/%s", config.Repo, commit.PRNumber, commit.Hash)
+				pullURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%v", config.Host, config.Repo, commit.PRNumber)
+				reviewURL := fmt.Sprintf("https://%v/%v/pull/%v/commits/%v", config.Host, config.Repo, commit.PRNumber, commit.Hash)
 
 				var bodyB strings.Builder
 				fprintf(&bodyB, "# 👉 [REVIEW](%s) 👈\n\n", reviewURL)
 				fprintf(&bodyB, "### %v\n---\n%v\n\n&nbsp;\n", commit.Title, commit.Message)
 				for _, cm := range stackedCommits {
-					cmURL := fmt.Sprintf("https://github.com/%s/pull/%v", config.Repo, cm.PRNumber)
+					cmURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, cm.PRNumber)
 					if cm.Hash == commit.Hash {
 						fprintf(&bodyB, emojis[commit.PRNumber%12])
 						fprintf(&bodyB, " **[%v (#%v)](%v)**\n", cm.Title, cm.PRNumber, cmURL)

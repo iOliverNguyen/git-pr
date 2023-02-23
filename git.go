@@ -45,6 +45,9 @@ func gitLogs(size int, extra ...string) (string, error) {
 }
 
 func parseLogs(logs string) (out CommitList, _ error) {
+	if strings.TrimSpace(logs) == "" {
+		return nil, nil
+	}
 	lines := strings.Split(logs, "\n")
 	part := []string{}
 	for _, line := range lines {

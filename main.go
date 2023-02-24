@@ -17,7 +17,8 @@ const (
 	head         = "head"
 )
 
-var emojis = []string{"♈️", "♉️", "♊️", "♋️", "♌️", "♍️", "♎️", "♏️", "♐️", "♑️", "♒️", "♓️"}
+var emojis0 = []string{"♈️", "♉️", "♊️", "♋️", "♌️", "♍️", "♎️", "♏️", "♐️", "♑️", "♒️", "♓️"}
+var emojis1 = []string{"🐹", "🐮", "🐯", "🦊", "🐲", "🐼", "🦁", "🐰", "🐵", "🐻", "🐶", "🐷"}
 
 func main() {
 	config = LoadConfig()
@@ -146,7 +147,7 @@ Hint: use "git add ." and "git stash" to clean up the repository
 				for _, cm := range stackedCommits {
 					cmURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, cm.PRNumber)
 					if cm.Hash == commit.Hash {
-						fprintf(&bodyB, emojis[commit.PRNumber%12])
+						fprintf(&bodyB, emojis1[commit.PRNumber%12])
 						fprintf(&bodyB, " **[%v (#%v)](%v)**\n", cm.Title, cm.PRNumber, cmURL)
 					} else {
 						fprintf(&bodyB, "◻️")

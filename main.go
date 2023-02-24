@@ -154,7 +154,8 @@ Hint: use "git add ." and "git stash" to clean up the repository
 					}
 				}
 				must(httpRequest("PATCH", pullURL, map[string]string{
-					"body": bodyB.String(),
+					"title": commit.Title,
+					"body":  bodyB.String(),
 				}))
 			}()
 		}

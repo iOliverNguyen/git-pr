@@ -51,7 +51,12 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 			return pr.Number, nil
 		}
 	}
-	return 0, errorf("failed to find PR for commit %q", commit.Title)
+	// The commit was pushed and got "Everything up-to-date", try creating new pr
+	err = githubCreatePRForCommit(commit)
+	if err != nil {
+		return 0, err
+	}
+	return commit.PRNumber, nil
 }
 
 func githubCreatePRForCommit(commit *Commit) error {

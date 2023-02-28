@@ -86,6 +86,7 @@ Hint: use "git add ." and "git stash" to clean up the repository
 		commit.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commit.Title)
 		must(execGit("reword", commit.Hash, "-m", commit.FullMessage()))
+		time.Sleep(1 * time.Second)
 	}
 
 	// push commits, concurrently

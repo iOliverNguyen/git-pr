@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/tidwall/gjson"
+	"time"
 )
 
 type NewPRBody struct {
@@ -75,5 +76,6 @@ func githubCreatePRForCommit(commit *Commit) error {
 		return errorf("unexpected")
 	}
 	commit.PRNumber = int(number)
+	time.Sleep(1 * time.Second)
 	return nil
 }

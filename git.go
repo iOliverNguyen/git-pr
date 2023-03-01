@@ -135,7 +135,7 @@ func parseBody(lines []string) (string, string) {
 	title := strings.TrimSpace(lines[0])
 	var b strings.Builder
 	for _, line := range lines[1:] {
-		b.WriteString(strings.TrimSpace(line))
+		b.WriteString(strings.TrimPrefix(line, "    "))
 		b.WriteByte('\n')
 	}
 	return title, strings.TrimSpace(b.String())

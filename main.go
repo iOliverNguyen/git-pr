@@ -55,16 +55,19 @@ Hint: use "git add ." and "git stash" to clean up the repository
 		mapRefs[remoteRef] = commit
 	}
 
+	// create a PR for each commit with missing remote ref, one by one
+	lastPRNumber := must(githubGetLastPRNumber())
+
 	// detect missing remote ref
-	var commitsWithRemoteRef []*Commit
-	var commitsWithoutRemoteRef []*Commit
-	for _, commit := range stackedCommits {
-		remoteRef := commit.GetAttr(KeyRemoteRef)
-		if remoteRef != "" {
-			commitsWithRemoteRef = append(commitsWithRemoteRef, commit)
-		} else {
-			commitsWithoutRemoteRef = append(commitsWithoutRemoteRef, commit)
-		}
+	for commitWithoutRemoteRef := findCommitWithoutRemoteRef(stackedCommits); commitWithoutRemoteRef != nil; commitWithoutRemoteRef = findCommitWithoutRemoteRef(stackedCommits) {
+		lastPRNumber++
+		remoteRef := fmt.Sprintf("%v/pr%v", config.User, lastPRNumber)
+		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
+		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
+		must(execGit("reword", commitWithoutRemoteRef.Hash, "-m", commitWithoutRemoteRef.FullMessage()))
+
+		time.Sleep(1 * time.Second)
+		stackedCommits = must(getStackedCommits(originMain, head))
 	}
 
 	pushCommit := func(commit *Commit) (logs string, execFunc func()) {
@@ -78,19 +81,7 @@ Hint: use "git add ." and "git stash" to clean up the repository
 		}
 	}
 
-	// create a PR for each commit with missing remote ref, one by one
-	lastPRNumber := must(githubGetLastPRNumber())
-	for _, commit := range commitsWithoutRemoteRef {
-		lastPRNumber++
-		remoteRef := fmt.Sprintf("%v/pr%v", config.User, lastPRNumber)
-		commit.SetAttr(KeyRemoteRef, remoteRef)
-		debugf("creating remote ref %v for %v", remoteRef, commit.Title)
-		must(execGit("reword", commit.Hash, "-m", commit.FullMessage()))
-		time.Sleep(1 * time.Second)
-	}
-
 	// push commits, concurrently
-	stackedCommits = must(getStackedCommits(originMain, head))
 	{
 		var wg sync.WaitGroup
 		wg.Add(len(stackedCommits))
@@ -163,6 +154,15 @@ Hint: use "git add ." and "git stash" to clean up the repository
 		}
 		wg.Wait()
 	}
+}
+
+func findCommitWithoutRemoteRef(commits []*Commit) *Commit {
+	for _, commit := range commits {
+		if commit.GetAttr(KeyRemoteRef) == "" {
+			return commit
+		}
+	}
+	return nil
 }
 
 func validateGitStatusClean() bool {

@@ -14,7 +14,7 @@ import (
 
 const (
 	KeyRemoteRef = "remote-ref"
-	head         = "head"
+	head         = "HEAD"
 )
 
 var emojis0 = []string{"♈️", "♉️", "♊️", "♋️", "♌️", "♍️", "♎️", "♏️", "♐️", "♑️", "♒️", "♓️"}

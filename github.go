@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/tidwall/gjson"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 type NewPRBody struct {

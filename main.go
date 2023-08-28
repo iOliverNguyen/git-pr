@@ -7,6 +7,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,8 @@ const (
 	KeyRemoteRef = "remote-ref"
 	head         = "head"
 )
+
+var regexpDraft = regexp.MustCompile(`(?i)\[draft]`)
 
 var emojis0 = []string{"♈️", "♉️", "♊️", "♋️", "♌️", "♍️", "♎️", "♏️", "♐️", "♑️", "♒️", "♓️"}
 var emojis1 = []string{"🐹", "🐮", "🐯", "🦊", "🐲", "🐼", "🦁", "🐰", "🐵", "🐻", "🐶", "🐷"}
@@ -159,10 +163,16 @@ Hint: use "git add ." and "git stash" to clean up the repository
 						fprintf(&bodyB, " [%v (#%v)](%v)\n", cm.Title, coalesce(cm.PRNumber, cm.Hash), cmURL)
 					}
 				}
-				must(httpRequest("PATCH", pullURL, map[string]string{
+				must(httpRequest("PATCH", pullURL, map[string]any{
 					"title": commit.Title,
 					"body":  bodyB.String(),
 				}))
+				isDraft := regexpDraft.MatchString(commit.Title)
+				if isDraft {
+					must(execGh("pr", "ready", strconv.Itoa(commit.PRNumber), "--undo"))
+				} else {
+					must(execGh("pr", "ready", strconv.Itoa(commit.PRNumber)))
+				}
 			}()
 		}
 		wg.Wait()

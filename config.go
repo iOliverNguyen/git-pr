@@ -32,7 +32,7 @@ func LoadConfig() (config Config) {
 	flag.BoolVar(&config.Verbose, "v", false, "Verbose output")
 	flag.StringVar(&config.Remote, "remote", "origin", "Remote name")
 	flag.StringVar(&config.MainBranch, "main", "main", "Main branch name")
-	flag.BoolVar(&config.IncludeOtherAuthors, "include-other-authors", false, "Include commits from other authors (default to ignore)")
+	flag.BoolVar(&config.IncludeOtherAuthors, "include-other-authors", false, "Include commits from other authors (default to false: skip)")
 
 	flagGitHubHosts := flag.String("gh-hosts", "~/.config/gh/hosts.yml", "Path to config.json")
 	flagTimeout := flag.Int("timeout", 20, "API call timeout in seconds")

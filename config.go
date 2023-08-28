@@ -6,6 +6,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,9 @@ type Config struct {
 	Host  string // git
 	User  string // gh-cli
 	Token string // gh-cli
+	Email string // git config user.email
+
+	IncludeOtherAuthors bool // flag
 
 	Verbose bool          // flag
 	Timeout time.Duration // flag
@@ -28,6 +32,7 @@ func LoadConfig() (config Config) {
 	flag.BoolVar(&config.Verbose, "v", false, "Verbose output")
 	flag.StringVar(&config.Remote, "remote", "origin", "Remote name")
 	flag.StringVar(&config.MainBranch, "main", "main", "Main branch name")
+	flag.BoolVar(&config.IncludeOtherAuthors, "include-other-authors", false, "Include commits from other authors (default to ignore)")
 
 	flagGitHubHosts := flag.String("gh-hosts", "~/.config/gh/hosts.yml", "Path to config.json")
 	flagTimeout := flag.Int("timeout", 20, "API call timeout in seconds")
@@ -74,8 +79,10 @@ Hint: Add host to ~/.config/gh/hosts.yml
 	}
 	config.User = ghHost.User
 	config.Token = ghHost.OauthToken
+	config.Email = must(getGitConfig("user.email"))
 	validateConfig("user", config.User)
 	validateConfig("token", config.Token)
+	validateConfig("email", config.Email)
 
 	return config
 }
@@ -100,6 +107,14 @@ func LoadGitHubConfig(configPath string) (out GitHubConfigHostsFile, _ error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func getGitConfig(name string) (string, error) {
+	out, err := execGit("config", "--get", name)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func expandPath(path string) string {

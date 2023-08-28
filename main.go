@@ -59,7 +59,12 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	lastPRNumber := must(githubGetLastPRNumber())
 
 	// detect missing remote ref
-	for commitWithoutRemoteRef := findCommitWithoutRemoteRef(stackedCommits); commitWithoutRemoteRef != nil; commitWithoutRemoteRef = findCommitWithoutRemoteRef(stackedCommits) {
+	for _, commitWithoutRemoteRef := range findCommitsWithoutRemoteRef(stackedCommits) {
+		// NOT --include-other-authors: do not create pr for commits that are not my own
+		if !config.IncludeOtherAuthors && !isMyOwnCommit(commitWithoutRemoteRef) {
+			commitWithoutRemoteRef.Skip = true
+			continue
+		}
 		lastPRNumber++
 		remoteRef := fmt.Sprintf("%v/pr%v", config.User, lastPRNumber)
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
@@ -80,12 +85,14 @@ Hint: use "git add ." and "git stash" to clean up the repository
 			}
 		}
 	}
-
 	// push commits, concurrently
 	{
 		var wg sync.WaitGroup
-		wg.Add(len(stackedCommits))
 		for _, commit := range stackedCommits {
+			if commit.Skip {
+				continue
+			}
+			wg.Add(1)
 			logs, execFunc := pushCommit(commit)
 			fmt.Println(logs)
 			go func() {
@@ -122,8 +129,11 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	// update PRs with review link, concurrently
 	{
 		var wg sync.WaitGroup
-		wg.Add(len(stackedCommits))
 		for _, commit := range stackedCommits {
+			if commit.Skip {
+				continue
+			}
+			wg.Add(1)
 			commit := commit
 			prURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, commit.PRNumber)
 			fmt.Printf("update pull request %v\n", prURL)
@@ -138,12 +148,15 @@ Hint: use "git add ." and "git stash" to clean up the repository
 				fprintf(&bodyB, "### %v\n---\n%v\n\n&nbsp;\n", commit.Title, commit.Message)
 				for _, cm := range stackedCommits {
 					cmURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, cm.PRNumber)
+					if cm.PRNumber == 0 {
+						cmURL = fmt.Sprintf("https://%v/%v/commit/%v", config.Host, config.Repo, cm.Hash)
+					}
 					if cm.Hash == commit.Hash {
 						fprintf(&bodyB, emojis1[commit.PRNumber%12])
-						fprintf(&bodyB, " **[%v (#%v)](%v)**\n", cm.Title, cm.PRNumber, cmURL)
+						fprintf(&bodyB, " **[%v (#%v)](%v)**\n", cm.Title, coalesce(cm.PRNumber, cm.Hash), cmURL)
 					} else {
 						fprintf(&bodyB, "◻️")
-						fprintf(&bodyB, " [%v (#%v)](%v)\n", cm.Title, cm.PRNumber, cmURL)
+						fprintf(&bodyB, " [%v (#%v)](%v)\n", cm.Title, coalesce(cm.PRNumber, cm.Hash), cmURL)
 					}
 				}
 				must(httpRequest("PATCH", pullURL, map[string]string{
@@ -156,16 +169,27 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	}
 }
 
-func findCommitWithoutRemoteRef(commits []*Commit) *Commit {
+func findCommitsWithoutRemoteRef(commits []*Commit) (results []*Commit) {
 	for _, commit := range commits {
 		if commit.GetAttr(KeyRemoteRef) == "" {
-			return commit
+			results = append(results, commit)
 		}
 	}
-	return nil
+	return results
 }
 
 func validateGitStatusClean() bool {
 	output := must(execGit("status"))
 	return strings.Contains(output, "nothing to commit, working tree clean")
+}
+
+func isMyOwnCommit(commit *Commit) bool {
+	return commit.AuthorEmail == config.Email
+}
+
+func coalesce(a int, b string) string {
+	if a != 0 {
+		return fmt.Sprint(a)
+	}
+	return b
 }

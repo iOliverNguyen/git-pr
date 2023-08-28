@@ -34,6 +34,7 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 		Head   struct {
 			Ref string `json:"ref"`
 		} `json:"head"`
+		UpdatedAt *time.Time
 	}
 
 	ghURL := fmt.Sprintf("https://api.%v/repos/%v/commits/%v/pulls?per_page=100", config.Host, config.Repo, commit.Hash)
@@ -46,12 +47,26 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 	if err != nil {
 		return 0, errorf("failed to parse request body: %v", err)
 	}
+
 	remoteRef := commit.GetAttr(KeyRemoteRef)
-	for _, pr := range out {
-		if pr.Head.Ref == remoteRef {
-			return pr.Number, nil
+	if remoteRef != "" {
+		for _, pr := range out {
+			if pr.Head.Ref == remoteRef {
+				return pr.Number, nil
+			}
 		}
 	}
+	if commit.Skip {
+		// return the latest pr number (or 0) for that commit if the commit is not under our control
+		var latestPR PR
+		for _, pr := range out {
+			if latestPR.UpdatedAt == nil || pr.UpdatedAt.After(*latestPR.UpdatedAt) {
+				latestPR = pr
+			}
+		}
+		return latestPR.Number, nil
+	}
+
 	// The commit was pushed and got "Everything up-to-date", try creating new pr
 	err = githubCreatePRForCommit(commit)
 	if err != nil {

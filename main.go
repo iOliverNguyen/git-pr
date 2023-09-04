@@ -63,19 +63,19 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	lastPRNumber := must(githubGetLastPRNumber())
 
 	// detect missing remote ref
-	for _, commitWithoutRemoteRef := range findCommitsWithoutRemoteRef(stackedCommits) {
+	for commitWithoutRemoteRef := findCommitWithoutRemoteRef(stackedCommits); commitWithoutRemoteRef != nil; commitWithoutRemoteRef = findCommitWithoutRemoteRef(stackedCommits) {
 		// NOT --include-other-authors: do not create pr for commits that are not my own
 		if !config.IncludeOtherAuthors && !isMyOwnCommit(commitWithoutRemoteRef) {
 			commitWithoutRemoteRef.Skip = true
 			continue
 		}
 		lastPRNumber++
-		remoteRef := fmt.Sprintf("%v/pr%v", config.User, lastPRNumber)
+		remoteRef := fmt.Sprintf("%v/%v", config.User, lastPRNumber, commitWithoutRemoteRef.Hash)
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
 		must(execGit("reword", commitWithoutRemoteRef.Hash, "-m", commitWithoutRemoteRef.FullMessage()))
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 		stackedCommits = must(getStackedCommits(originMain, head))
 	}
 
@@ -179,13 +179,16 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	}
 }
 
-func findCommitsWithoutRemoteRef(commits []*Commit) (results []*Commit) {
+func findCommitWithoutRemoteRef(commits []*Commit) *Commit {
 	for _, commit := range commits {
+		if commit.Skip {
+			continue
+		}
 		if commit.GetAttr(KeyRemoteRef) == "" {
-			results = append(results, commit)
+			return commit
 		}
 	}
-	return results
+	return nil
 }
 
 func validateGitStatusClean() bool {

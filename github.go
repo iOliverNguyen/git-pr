@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -24,7 +23,7 @@ func githubGetLastPRNumber() (int, error) {
 	}
 	number := gjson.GetBytes(jsonBody, "0.number").Int()
 	if number == 0 {
-		return 0, errors.New("failed to find last pull request number")
+		debugf("failed to find last pull number request, default to 0")
 	}
 	return int(number), nil
 }

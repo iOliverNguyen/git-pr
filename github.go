@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -57,14 +59,7 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 		}
 	}
 	if commit.Skip {
-		// return the latest pr number (or 0) for that commit if the commit is not under our control
-		var latestPR PR
-		for _, pr := range out {
-			if latestPR.UpdatedAt == nil || pr.UpdatedAt.After(*latestPR.UpdatedAt) {
-				latestPR = pr
-			}
-		}
-		return latestPR.Number, nil
+		return githubSearchPRNumberForCommit(commit)
 	}
 
 	// The commit was pushed and got "Everything up-to-date", try creating new pr
@@ -93,4 +88,20 @@ func githubCreatePRForCommit(commit *Commit) error {
 	commit.PRNumber = int(number)
 	time.Sleep(1 * time.Second)
 	return nil
+}
+
+var regexpNumber = regexp.MustCompile(`[0-9]+`)
+
+func githubSearchPRNumberForCommit(commit *Commit) (int, error) {
+	query := fmt.Sprintf("in:title %v", commit.Title)
+	result, err := execGh("pr", "list", "--limit=1", "--search", query)
+	if err != nil {
+		debugf("failed to search PR for commit (ignored) %q: %v\n", commit.Title, err)
+		return 0, nil
+	}
+	s := regexpNumber.FindString(result)
+	if s == "" {
+		return 0, nil
+	}
+	return must(strconv.Atoi(s)), nil
 }

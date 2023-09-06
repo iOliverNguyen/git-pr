@@ -149,7 +149,7 @@ Hint: use "git add ." and "git stash" to clean up the repository
 				for _, cm := range stackedCommits {
 					cmURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, cm.PRNumber)
 					if cm.PRNumber == 0 {
-						cmURL = fmt.Sprintf("https://%v/%v/commit/%v", config.Host, config.Repo, cm.Hash)
+						cmURL = fmt.Sprintf("https://%v/%v/commit/%v", config.Host, config.Repo, cm.ShortHash())
 					}
 					if cm.Hash == commit.Hash {
 						fprintf(&bodyB, emojis1[commit.PRNumber%12])

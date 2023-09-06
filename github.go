@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -41,25 +43,35 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 
 	ghURL := fmt.Sprintf("https://api.%v/repos/%v/commits/%v/pulls?per_page=100", config.Host, config.Repo, commit.Hash)
 	jsonBody, err := httpGET(ghURL)
+	if err != nil && strings.Contains(err.Error(), "No commit found") {
+		if !config.IncludeOtherAuthors {
+			fmt.Println()
+			fmt.Printf("ERROR: commit %v is from other author and will not be pushed\n", commit.ShortHash())
+			fmt.Printf(" HINT: use --include-other-authors to include it\n")
+			os.Exit(1)
+		}
+	}
 	if err != nil {
 		return 0, err
 	}
-	var out []PR
-	err = json.Unmarshal(jsonBody, &out)
-	if err != nil {
-		return 0, errorf("failed to parse request body: %v", err)
-	}
+	if err == nil {
+		var out []PR
+		err = json.Unmarshal(jsonBody, &out)
+		if err != nil {
+			return 0, errorf("failed to parse request body: %v", err)
+		}
 
-	remoteRef := commit.GetAttr(KeyRemoteRef)
-	if remoteRef != "" {
-		for _, pr := range out {
-			if pr.Head.Ref == remoteRef {
-				return pr.Number, nil
+		remoteRef := commit.GetAttr(KeyRemoteRef)
+		if remoteRef != "" {
+			for _, pr := range out {
+				if pr.Head.Ref == remoteRef {
+					return pr.Number, nil
+				}
 			}
 		}
-	}
-	if commit.Skip {
-		return githubSearchPRNumberForCommit(commit)
+		if commit.Skip {
+			return githubSearchPRNumberForCommit(commit)
+		}
 	}
 
 	// The commit was pushed and got "Everything up-to-date", try creating new pr

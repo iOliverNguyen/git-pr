@@ -18,13 +18,14 @@ func httpPOST(url string, body any) ([]byte, error) {
 	return httpRequest("POST", url, body)
 }
 
-func httpRequest(method string, url string, body any) ([]byte, error) {
+func httpRequest(method string, url string, body any) (_ []byte, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
 	defer cancel()
 
 	var bodyReader io.Reader
+	var bodyJSON []byte
 	if body != nil {
-		bodyJSON, err := json.Marshal(body)
+		bodyJSON, err = json.Marshal(body)
 		if err != nil {
 			return nil, err
 		}
@@ -38,6 +39,9 @@ func httpRequest(method string, url string, body any) ([]byte, error) {
 	req.Header.Set("Authorization", "Bearer "+config.Token)
 
 	debugf("-> %v %v\n", method, url)
+	if bodyJSON != nil {
+		debugf("   %v\n", string(bodyJSON))
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -54,5 +58,5 @@ func httpRequest(method string, url string, body any) ([]byte, error) {
 	}
 	fmt.Println("failed to call http request:", url, resp.Status)
 	fmt.Println(string(data))
-	return data, errors.New("failed to call http request")
+	return data, errors.New(fmt.Sprintf("failed to call http request: (%v) %s", resp.Status, data))
 }

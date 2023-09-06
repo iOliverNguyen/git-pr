@@ -99,7 +99,7 @@ func execCommand(name string, args ...string) (string, error) {
 			if strings.Contains(arg, " ") {
 				fmt.Printf("%q", arg)
 			} else {
-				fmt.Print(arg)
+				fmt.Print(arg, " ")
 			}
 		}
 		fmt.Println()

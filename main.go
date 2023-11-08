@@ -61,11 +61,6 @@ Hint: use "git add ." and "git stash" to clean up the repository
 
 	// create a PR for each commit with missing remote ref, one by one
 	for commitWithoutRemoteRef := findCommitWithoutRemoteRef(stackedCommits); commitWithoutRemoteRef != nil; commitWithoutRemoteRef = findCommitWithoutRemoteRef(stackedCommits) {
-		// NOT --include-other-authors: do not create pr for commits that are not my own
-		if !config.IncludeOtherAuthors && !isMyOwnCommit(commitWithoutRemoteRef) {
-			commitWithoutRemoteRef.Skip = true
-			continue
-		}
 		remoteRef := fmt.Sprintf("%v/%v", config.User, commitWithoutRemoteRef.ShortHash())
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
@@ -89,7 +84,11 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	{
 		var wg sync.WaitGroup
 		for _, commit := range stackedCommits {
-			if commit.Skip {
+			// push my own commits
+			// and include others' commits if "--include-other-authors" is set
+			shouldPush := isMyOwnCommit(commit) || config.IncludeOtherAuthors
+			if !shouldPush {
+				commit.Skip = true
 				continue
 			}
 			wg.Add(1)

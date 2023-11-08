@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/zalando/go-keyring"
 	"gopkg.in/yaml.v3"
 	"os"
 	"regexp"
@@ -65,7 +66,9 @@ func LoadConfig() (config Config) {
 		fmt.Printf("failed to load GitHub config at %v: %v\n", *flagGitHubHosts, err)
 		fmt.Printf(`
 Hint: Install github client and login with your account
-      https://cli.github.com/manual/installation
+      https://github.com/cli/cli#installation
+Then:
+      gh auth login
 `)
 		os.Exit(1)
 	}
@@ -73,17 +76,32 @@ Hint: Install github client and login with your account
 	if ghHost == nil {
 		fmt.Printf("no GitHub config for host %v\n", config.Host)
 		fmt.Print(`
-Hint: Add host to ~/.config/gh/hosts.yml
+Hint: Check your ~/.config/gh/hosts.yml
+Run the following command and choose your github host:
+
+      gh auth login
 `)
 		os.Exit(1)
 	}
 	config.User = ghHost.User
 	config.Token = ghHost.OauthToken
 	config.Email = must(getGitConfig("user.email"))
-	validateConfig("user", config.User)
-	validateConfig("token", config.Token)
-	validateConfig("email", config.Email)
+	if config.Token == "" { // try getting from keyring
+		key := "gh:" + config.Host
+		config.Token, _ = keyring.Get(key, "")
+	}
+	if config.Token == "" {
+		fmt.Printf("no GitHub token found for host %v\n", config.Host)
+		fmt.Print(`
+Hint: use github cli to login to your account:
 
+      gh auth login
+`)
+		os.Exit(1)
+	}
+
+	validateConfig("user", config.User)
+	validateConfig("email", config.Email)
 	return config
 }
 

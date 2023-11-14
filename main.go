@@ -21,8 +21,7 @@ const (
 
 var regexpDraft = regexp.MustCompile(`(?i)\[draft]`)
 
-var emojis0 = []string{"♈️", "♉️", "♊️", "♋️", "♌️", "♍️", "♎️", "♏️", "♐️", "♑️", "♒️", "♓️"}
-var emojis1 = []string{"🐹", "🐮", "🐯", "🦊", "🐲", "🐼", "🦁", "🐰", "🐵", "🐻", "🐶", "🐷"}
+// select emojis
 
 func main() {
 	config = LoadConfig()
@@ -150,12 +149,16 @@ Hint: use "git add ." and "git stash" to clean up the repository
 					if cm.PRNumber == 0 {
 						cmURL = fmt.Sprintf("https://%v/%v/commit/%v", config.Host, config.Repo, cm.ShortHash())
 					}
+					cmRef := cm.Hash
+					if cm.PRNumber != 0 {
+						cmRef = fmt.Sprintf("#%v", cm.PRNumber)
+					}
 					if cm.Hash == commit.Hash {
-						fprintf(&bodyB, emojis1[commit.PRNumber%12])
-						fprintf(&bodyB, " **[%v (#%v)](%v)**\n", cm.Title, coalesce(cm.PRNumber, cm.Hash), cmURL)
+						fprintf(&bodyB, emojisx[commit.PRNumber%len(emojisx)])
+						fprintf(&bodyB, " **[%v (%v)](%v)**\n", cm.Title, cmRef, cmURL)
 					} else {
 						fprintf(&bodyB, "◻️")
-						fprintf(&bodyB, " [%v (#%v)](%v)\n", cm.Title, coalesce(cm.PRNumber, cm.Hash), cmURL)
+						fprintf(&bodyB, " [%v (%v)](%v)\n", cm.Title, cmRef, cmURL)
 					}
 				}
 				must(httpRequest("PATCH", pullURL, map[string]any{

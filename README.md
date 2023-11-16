@@ -58,8 +58,8 @@ PRs](https://olivernguyen.io/w/stacked.prs).
   ```sh
   git clone https://github.com/iOliverNguyen/git-pr
   cd git-pr
-  go install .
-  export PATH=$PATH:~/go/bin
+  go build .
+  mv git-pr ~/bin  # add it to your $PATH
   ```
 
 ## Usage

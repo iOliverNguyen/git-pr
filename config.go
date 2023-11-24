@@ -3,12 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/zalando/go-keyring"
-	"gopkg.in/yaml.v3"
 	"os"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/zalando/go-keyring"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -63,7 +64,7 @@ func LoadConfig() (config Config) {
 	if err != nil {
 		exitf("not a git repository")
 	}
-	regexpURL := regexp.MustCompile(`git@([^:]+):([^/]+)/(.+)(\.git)?`)
+	regexpURL := regexp.MustCompile(`git@([^:]+):([^/]+)/([^.]+)(\.git)?`)
 	matches := regexpURL.FindStringSubmatch(out)
 	if matches == nil {
 		exitf("failed to parse remote url: expect git@<host>:<user>/<repo> (got %q)", out)

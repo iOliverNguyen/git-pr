@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -27,7 +28,7 @@ func githubGetLastPRNumber() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-  
+
 	var out []PR
 	err = json.Unmarshal(jsonBody, &out)
 	if err != nil {

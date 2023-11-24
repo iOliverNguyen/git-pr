@@ -16,7 +16,7 @@ import (
 
 const (
 	KeyRemoteRef = "remote-ref"
-	head         = "head"
+	head         = "HEAD"
 )
 
 var regexpDraft = regexp.MustCompile(`(?i)\[draft]`)

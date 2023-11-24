@@ -7,6 +7,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,11 +16,12 @@ import (
 
 const (
 	KeyRemoteRef = "remote-ref"
-	head         = "head"
+	head         = "HEAD"
 )
 
-var emojis0 = []string{"♈️", "♉️", "♊️", "♋️", "♌️", "♍️", "♎️", "♏️", "♐️", "♑️", "♒️", "♓️"}
-var emojis1 = []string{"🐹", "🐮", "🐯", "🦊", "🐲", "🐼", "🦁", "🐰", "🐵", "🐻", "🐶", "🐷"}
+var regexpDraft = regexp.MustCompile(`(?i)\[draft]`)
+
+// select emojis
 
 func main() {
 	config = LoadConfig()
@@ -56,17 +59,13 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	}
 
 	// create a PR for each commit with missing remote ref, one by one
-	lastPRNumber := must(githubGetLastPRNumber())
-
-	// detect missing remote ref
 	for commitWithoutRemoteRef := findCommitWithoutRemoteRef(stackedCommits); commitWithoutRemoteRef != nil; commitWithoutRemoteRef = findCommitWithoutRemoteRef(stackedCommits) {
-		lastPRNumber++
-		remoteRef := fmt.Sprintf("%v/pr%v", config.User, lastPRNumber)
+		remoteRef := fmt.Sprintf("%v/%v", config.User, commitWithoutRemoteRef.ShortHash())
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
 		must(execGit("reword", commitWithoutRemoteRef.Hash, "-m", commitWithoutRemoteRef.FullMessage()))
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 		stackedCommits = must(getStackedCommits(originMain, head))
 	}
 
@@ -80,12 +79,18 @@ Hint: use "git add ." and "git stash" to clean up the repository
 			}
 		}
 	}
-
 	// push commits, concurrently
 	{
 		var wg sync.WaitGroup
-		wg.Add(len(stackedCommits))
 		for _, commit := range stackedCommits {
+			// push my own commits
+			// and include others' commits if "--include-other-authors" is set
+			shouldPush := isMyOwnCommit(commit) || config.IncludeOtherAuthors
+			if !shouldPush {
+				commit.Skip = true
+				continue
+			}
+			wg.Add(1)
 			logs, execFunc := pushCommit(commit)
 			fmt.Println(logs)
 			go func() {
@@ -122,8 +127,11 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	// update PRs with review link, concurrently
 	{
 		var wg sync.WaitGroup
-		wg.Add(len(stackedCommits))
 		for _, commit := range stackedCommits {
+			if commit.Skip {
+				continue
+			}
+			wg.Add(1)
 			commit := commit
 			prURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, commit.PRNumber)
 			fmt.Printf("update pull request %v\n", prURL)
@@ -138,18 +146,31 @@ Hint: use "git add ." and "git stash" to clean up the repository
 				fprintf(&bodyB, "### %v\n---\n%v\n\n&nbsp;\n", commit.Title, commit.Message)
 				for _, cm := range stackedCommits {
 					cmURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, cm.PRNumber)
+					if cm.PRNumber == 0 {
+						cmURL = fmt.Sprintf("https://%v/%v/commit/%v", config.Host, config.Repo, cm.ShortHash())
+					}
+					cmRef := cm.Hash
+					if cm.PRNumber != 0 {
+						cmRef = fmt.Sprintf("#%v", cm.PRNumber)
+					}
 					if cm.Hash == commit.Hash {
-						fprintf(&bodyB, emojis1[commit.PRNumber%12])
-						fprintf(&bodyB, " **[%v (#%v)](%v)**\n", cm.Title, cm.PRNumber, cmURL)
+						fprintf(&bodyB, emojisx[commit.PRNumber%len(emojisx)])
+						fprintf(&bodyB, " **[%v (%v)](%v)**\n", cm.Title, cmRef, cmURL)
 					} else {
 						fprintf(&bodyB, "◻️")
-						fprintf(&bodyB, " [%v (#%v)](%v)\n", cm.Title, cm.PRNumber, cmURL)
+						fprintf(&bodyB, " [%v (%v)](%v)\n", cm.Title, cmRef, cmURL)
 					}
 				}
-				must(httpRequest("PATCH", pullURL, map[string]string{
+				must(httpRequest("PATCH", pullURL, map[string]any{
 					"title": commit.Title,
 					"body":  bodyB.String(),
 				}))
+				isDraft := regexpDraft.MatchString(commit.Title)
+				if isDraft {
+					must(execGh("pr", "ready", strconv.Itoa(commit.PRNumber), "--undo"))
+				} else {
+					must(execGh("pr", "ready", strconv.Itoa(commit.PRNumber)))
+				}
 			}()
 		}
 		wg.Wait()
@@ -158,6 +179,9 @@ Hint: use "git add ." and "git stash" to clean up the repository
 
 func findCommitWithoutRemoteRef(commits []*Commit) *Commit {
 	for _, commit := range commits {
+		if commit.Skip {
+			continue
+		}
 		if commit.GetAttr(KeyRemoteRef) == "" {
 			return commit
 		}
@@ -168,4 +192,15 @@ func findCommitWithoutRemoteRef(commits []*Commit) *Commit {
 func validateGitStatusClean() bool {
 	output := must(execGit("status"))
 	return strings.Contains(output, "nothing to commit, working tree clean")
+}
+
+func isMyOwnCommit(commit *Commit) bool {
+	return commit.AuthorEmail == config.Email
+}
+
+func coalesce(a int, b string) string {
+	if a != 0 {
+		return fmt.Sprint(a)
+	}
+	return b
 }

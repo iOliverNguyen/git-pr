@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -80,4 +82,34 @@ func formatKey(key string) string {
 		b.WriteString(word[1:])
 	}
 	return b.String()
+}
+
+func execGit(args ...string) (string, error) {
+	return execCommand("git", args...)
+}
+
+func execGh(args ...string) (string, error) {
+	return execCommand("gh", args...)
+}
+
+func execCommand(name string, args ...string) (string, error) {
+	if config.Verbose {
+		fmt.Print(name, " ")
+		for _, arg := range args {
+			if strings.Contains(arg, " ") {
+				fmt.Printf("%q", arg)
+			} else {
+				fmt.Print(arg, " ")
+			}
+		}
+		fmt.Println()
+	}
+	stdout := bytes.Buffer{}
+	cmd := exec.Command(name, args...)
+	cmd.Stdout, cmd.Stderr = &stdout, &stdout
+	err := cmd.Run()
+	if err != nil {
+		fmt.Println(stdout.String())
+	}
+	return stdout.String(), err
 }

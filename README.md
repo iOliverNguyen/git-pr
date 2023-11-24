@@ -58,8 +58,8 @@ PRs](https://olivernguyen.io/w/stacked.prs).
   ```sh
   git clone https://github.com/iOliverNguyen/git-pr
   cd git-pr
-  go install .
-  export PATH=$PATH:~/go/bin
+  go build .
+  mv git-pr ~/bin  # add it to your $PATH
   ```
 
 ## Usage
@@ -70,6 +70,7 @@ git pr
 ```
 
 Check out the last commit in your stacked commits and call `git pr` to push the stack to GitHub, one PR for each commit.
+Add `[draft]` to the commit title to mark it as draft.
 
 ### Arguments
 
@@ -78,6 +79,8 @@ $ git-pr --help
 Usage: git pr [options]
   -gh-hosts string
     	Path to config.json (default "~/.config/gh/hosts.yml")
+  -include-other-authors boolean
+    	Create PRs for commits from other authors (default to false: skip)
   -main string
     	Main branch name (default "main")
   -remote string

@@ -19,6 +19,7 @@ type Commit struct {
 	Attrs       []KeyVal
 
 	PRNumber int
+	Skip     bool // do not push this commit
 }
 
 func (commit *Commit) String() string {

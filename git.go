@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -15,28 +13,6 @@ var (
 	regexpDate       = regexp.MustCompile(`^Date:   (.*)$`)
 	regexpKeyVal     = regexp.MustCompile(`^    ([a-zA-Z0-9-]+): (.*)$`)
 )
-
-func execGit(args ...string) (string, error) {
-	if config.Verbose {
-		fmt.Print("git ")
-		for _, arg := range args {
-			if strings.Contains(arg, " ") {
-				fmt.Printf("%q", arg)
-			} else {
-				fmt.Print(arg)
-			}
-		}
-		fmt.Println()
-	}
-	stdout := bytes.Buffer{}
-	cmd := exec.Command("git", args...)
-	cmd.Stdout, cmd.Stderr = &stdout, &stdout
-	err := cmd.Run()
-	if err != nil {
-		fmt.Println(stdout.String())
-	}
-	return stdout.String(), err
-}
 
 func gitLogs(size int, extra ...string) (string, error) {
 	args := []string{"log", fmt.Sprintf("-%v", size)}

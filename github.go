@@ -20,16 +20,28 @@ type NewPRBody struct {
 }
 
 func githubGetLastPRNumber() (int, error) {
+	type PR struct{}
+
 	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls?state=all&sort=created&direction=desc&per_page=1", config.Host, config.Repo)
 	jsonBody, err := httpGET(ghURL)
 	if err != nil {
 		return 0, err
 	}
-	number := gjson.GetBytes(jsonBody, "0.number").Int()
-	if number == 0 {
-		debugf("failed to find last pull number request, default to 0")
+  
+	var out []PR
+	err = json.Unmarshal(jsonBody, &out)
+	if err != nil {
+		return 0, errorf("failed to parse request body: %v", err)
 	}
-	return int(number), nil
+	if len(out) == 0 {
+		return 0, nil
+	} else {
+		number := gjson.GetBytes(jsonBody, "0.number").Int()
+		if number == 0 {
+			return 0, errors.New("failed to find last pull request number")
+		}
+		return int(number), nil
+	}
 }
 
 func githubGetPRNumberForCommit(commit *Commit) (int, error) {

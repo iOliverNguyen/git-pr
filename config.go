@@ -25,6 +25,8 @@ var (
 	config  Config
 )
 
+const gitconfigTags = "git-pr.tags"
+
 type Config struct {
 	Repo       string // git
 	Remote     string // flag
@@ -34,6 +36,8 @@ type Config struct {
 	User  string // gh-cli
 	Token string // gh-cli
 	Email string // git config user.email
+
+	Tags []string // git config git-pr.<repo>.tags
 
 	IncludeOtherAuthors bool // flag
 
@@ -112,6 +116,7 @@ Hint: use github cli to login to your account:
 		os.Exit(1)
 	}
 
+	config.Tags = getGitPRConfig(config.Repo)
 	validateConfig("user", config.User)
 	validateConfig("email", config.Email)
 	return config
@@ -162,4 +167,30 @@ func validateConfig[T comparable](name string, value T) {
 	if value == zero {
 		exitf("missing config %q", name)
 	}
+}
+
+func getGitPRConfig() (tags []string) {
+	rawTags := must(execGit("config", "--get", gitconfigTags))
+	for _, tag := range strings.Split(rawTags, ",") {
+		tag = strings.TrimSpace(tag)
+		if tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+func saveGitPRConfig(tags []string) []string {
+	var xtags []string
+	for i := range tags {
+		tag := strings.TrimSpace(tags[i])
+		if tag != "" {
+			xtags = append(xtags, tag)
+		}
+	}
+	rawTags := strings.Join(xtags, ",")
+
+	must(execGit("config", "--unset-all", gitconfigTags))
+	must(execGit("config", "--add", gitconfigTags, rawTags))
+	return xtags
 }

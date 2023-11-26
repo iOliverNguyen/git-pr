@@ -5,6 +5,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"regexp"
@@ -24,7 +25,26 @@ var regexpDraft = regexp.MustCompile(`(?i)\[draft]`)
 // select emojis
 
 func main() {
+	flSetTags := flag.String("default-tags", "", "Set default tags for the current repository (comma separated)")
+	flTags := flag.String("t", "", "Set tags for current stack, ignore default (comma separated)")
+	flag.Parse()
+
 	config = LoadConfig()
+	if *flSetTags != "" {
+		tags := saveGitPRConfig(strings.Split(*flSetTags, ","))
+		fmt.Printf("Default tags: %v\n", strings.Join(tags, ", "))
+		return
+	}
+	if *flTags != "" {
+		config.Tags = nil
+		tags := strings.Split(*flTags, ",")
+		for _, tag := range tags {
+			tag = strings.TrimSpace(tag)
+			if tag != "" {
+				config.Tags = append(config.Tags, tag)
+			}
+		}
+	}
 
 	// ensure no uncommitted changes
 	if !validateGitStatusClean() {
@@ -75,7 +95,7 @@ Hint: use "git add ." and "git stash" to clean up the repository
 		return logs, func() {
 			out := must(execGit("push", "-f", config.Remote, args))
 			if strings.Contains(out, "remote: Create a pull request") {
-				must(0, githubCreatePRForCommit(commit))
+				must(0, githubCreatePRForCommit(commit, config.Tags))
 			}
 		}
 	}

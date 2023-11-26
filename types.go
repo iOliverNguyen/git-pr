@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,7 +24,7 @@ type Commit struct {
 }
 
 func (commit *Commit) String() string {
-	remoteRef := commit.GetAttr(KeyRemoteRef)
+	remoteRef := commit.GetRemoteRef()
 	if remoteRef != "" {
 		remoteRef = fmt.Sprintf("(%v)", remoteRef)
 	}
@@ -56,6 +57,28 @@ func (commit *Commit) GetAttr(key string) string {
 	return ""
 }
 
+func (commit *Commit) GetRemoteRef() string {
+	return commit.GetAttr(KeyRemoteRef)
+}
+
+func (commit *Commit) GetTags(defaultTags ...string) (tags []string) {
+	tags = append(tags, defaultTags...)
+	rawTags := commit.GetAttr(KeyTags)
+	for _, tag := range strings.Split(rawTags, ",") {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		for _, t := range tags {
+			if t == tag {
+				continue
+			}
+		}
+		tags = append(tags, tag)
+	}
+	return tags
+}
+
 func (commit *Commit) SetAttr(key, value string) {
 	for i, kv := range commit.Attrs {
 		if kv[0] == key {
@@ -72,8 +95,22 @@ func (commit *Commit) SetAttr(key, value string) {
 func (commit *Commit) FullMessage() string {
 	var b strings.Builder
 	fprint(&b, commit.Title, "\n\n", commit.Message, "\n\n")
+	sort.Slice(commit.Attrs, func(i, j int) bool {
+		if commit.Attrs[i][0] == KeyRemoteRef {
+			return false
+		}
+		if commit.Attrs[j][0] == KeyRemoteRef {
+			return true
+		}
+		return commit.Attrs[i][0] < commit.Attrs[j][0]
+	})
+	maxL := maxAttrsLength(commit.Attrs)
+	format := "% " + strconv.Itoa(maxL) + "v: %v\n"
 	for _, kv := range commit.Attrs {
-		fprintf(&b, "%v: %v\n", formatKey(kv[0]), kv[1])
+		fprintf(&b, format, formatKey(kv[0]), kv[1])
+	}
+	if config.Verbose {
+		fmt.Println("\n" + b.String() + "\n")
 	}
 	return strings.TrimSpace(b.String())
 }

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -45,7 +44,7 @@ func githubGetLastPRNumber() (int, error) {
 	}
 }
 
-func githubGetPRNumberForCommit(commit *Commit) (int, error) {
+func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 	type PR struct {
 		Number int `json:"number"`
 		Head   struct {
@@ -57,12 +56,7 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 	ghURL := fmt.Sprintf("https://api.%v/repos/%v/commits/%v/pulls?per_page=100", config.Host, config.Repo, commit.Hash)
 	jsonBody, err := httpGET(ghURL)
 	if err != nil && strings.Contains(err.Error(), "No commit found") {
-		if !config.IncludeOtherAuthors {
-			fmt.Println()
-			fmt.Printf("ERROR: commit %v is from other author and will not be pushed\n", commit.ShortHash())
-			fmt.Printf(" HINT: use --include-other-authors to include it\n")
-			os.Exit(1)
-		}
+		return githubSearchPRNumberForCommit(commit)
 	}
 	if err != nil {
 		return 0, err
@@ -74,7 +68,7 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 			return 0, errorf("failed to parse request body: %v", err)
 		}
 
-		remoteRef := commit.GetAttr(KeyRemoteRef)
+		remoteRef := commit.GetRemoteRef()
 		if remoteRef != "" {
 			for _, pr := range out {
 				if pr.Head.Ref == remoteRef {
@@ -88,31 +82,24 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 	}
 
 	// The commit was pushed and got "Everything up-to-date", try creating new pr
-	err = githubCreatePRForCommit(commit)
+	err = githubCreatePRForCommit(commit, prev)
 	if err != nil {
 		return 0, err
 	}
 	return commit.PRNumber, nil
 }
 
-func githubCreatePRForCommit(commit *Commit) error {
-	// attempt to create new PR
-	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls", config.Host, config.Repo)
-	body := NewPRBody{
-		Title: commit.Title,
-		Body:  commit.Message,
-		Head:  commit.GetAttr(KeyRemoteRef),
-		Base:  config.MainBranch,
+func githubCreatePRForCommit(commit *Commit, prev *Commit) error {
+	base := config.MainBranch
+	if prev != nil {
+		base = prev.GetRemoteRef()
 	}
-	fmt.Printf("create pull request for %q\n", commit.Title)
-	jsonBody := must(httpPOST(ghURL, body))
-	number := gjson.GetBytes(jsonBody, "number").Int()
-	if number == 0 {
-		return errorf("unexpected")
+	args := []string{"pr", "create", "--title", commit.Title, "--body", "", "--head", commit.GetRemoteRef(), "--base", base}
+	if tags := commit.GetTags(config.Tags...); len(tags) > 0 {
+		args = append(args, "--label", strings.Join(tags, ","))
 	}
-	commit.PRNumber = int(number)
-	time.Sleep(1 * time.Second)
-	return nil
+	_, err := execGh(args...)
+	return err
 }
 
 var regexpNumber = regexp.MustCompile(`[0-9]+`)

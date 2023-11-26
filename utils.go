@@ -84,6 +84,16 @@ func formatKey(key string) string {
 	return b.String()
 }
 
+func maxAttrsLength(attrs []KeyVal) int {
+	maxL := 0
+	for _, item := range attrs {
+		if len(item[0]) > maxL {
+			maxL = len(item[0])
+		}
+	}
+	return maxL
+}
+
 func execGit(args ...string) (string, error) {
 	return execCommand("git", args...)
 }

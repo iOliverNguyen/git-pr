@@ -11,7 +11,7 @@ var (
 	regexpCommitHash = regexp.MustCompile(`^commit ([0-9a-f]{40})$`)
 	regexpAuthor     = regexp.MustCompile(`^Author: (.*) <(.*)>$`)
 	regexpDate       = regexp.MustCompile(`^Date:   (.*)$`)
-	regexpKeyVal     = regexp.MustCompile(`^    ([a-zA-Z0-9-]+): (.*)$`)
+	regexpKeyVal     = regexp.MustCompile(`^\s+([a-zA-Z0-9-]+):(.*)$`)
 )
 
 func gitLogs(size int, extra ...string) (string, error) {
@@ -83,10 +83,13 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 			break
 		}
 	}
-	lines = lines[:bodyEnd]
+	lines = lines[bodyStart:bodyEnd]
 	// parse footer
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 		if m := regexpKeyVal.FindStringSubmatch(line); m != nil {
 			key, val := strings.ToLower(m[1]), strings.TrimSpace(m[2])
 			out.Attrs = append(out.Attrs, KeyVal{key, val})
@@ -96,7 +99,7 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 		}
 	}
 	// parse body
-	out.Title, out.Message = parseBody(lines[bodyStart:bodyEnd])
+	out.Title, out.Message = parseBody(lines[:bodyEnd])
 	// validate
 	if out.Hash == "" || out.AuthorName == "" || out.AuthorEmail == "" || out.Title == "" {
 		panicf(nil, "failed to parse commit with log:\n%v", strings.Join(backup, "\n"))
@@ -128,4 +131,15 @@ func getStackedCommits(base, target string) ([]*Commit, error) {
 	}
 	// sort from oldest to newest
 	return revert(list), nil
+}
+
+func deleteBranch(branch string) error {
+	branches, err := execGit("branch")
+	if err != nil {
+		return err
+	}
+	if strings.Contains(branches, branch+"\n") {
+		_, err = execGit("branch", "-D", branch) // delete branch
+	}
+	return err
 }

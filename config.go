@@ -25,6 +25,8 @@ var (
 	config  Config
 )
 
+const gitconfigTags = "git-pr.tags"
+
 type Config struct {
 	Repo       string // git
 	Remote     string // flag
@@ -34,6 +36,8 @@ type Config struct {
 	User  string // gh-cli
 	Token string // gh-cli
 	Email string // git config user.email
+
+	Tags []string // git config git-pr.<repo>.tags
 
 	IncludeOtherAuthors bool // flag
 
@@ -49,6 +53,8 @@ func LoadConfig() (config Config) {
 
 	flagGitHubHosts := flag.String("gh-hosts", "~/.config/gh/hosts.yml", "Path to config.json")
 	flagTimeout := flag.Int("timeout", 20, "API call timeout in seconds")
+	flagSetTags := flag.String("default-tags", "", "Set default tags for the current repository (comma separated)")
+	flagTags := flag.String("t", "", "Set tags for current stack, ignore default (comma separated)")
 
 	// parse flags
 	usage := "Usage: git pr [options]"
@@ -57,7 +63,25 @@ func LoadConfig() (config Config) {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	// configs from flags
 	config.Timeout = time.Duration(*flagTimeout) * time.Second
+	if *flagSetTags != "" {
+		tags := saveGitPRConfig(strings.Split(*flagSetTags, ","))
+		fmt.Printf("Set default tags: %v\n", strings.Join(tags, ", "))
+		os.Exit(0)
+	}
+	config.Tags = getGitPRConfig()
+	if *flagTags != "" {
+		config.Tags = nil // override default tags
+		tags := strings.Split(*flagTags, ",")
+		for _, tag := range tags {
+			tag = strings.TrimSpace(tag)
+			if tag != "" {
+				config.Tags = append(config.Tags, tag)
+			}
+		}
+	}
 
 	// detect repository
 	out, err := execGit("remote", "show", config.Remote)
@@ -162,4 +186,30 @@ func validateConfig[T comparable](name string, value T) {
 	if value == zero {
 		exitf("missing config %q", name)
 	}
+}
+
+func getGitPRConfig() (tags []string) {
+	rawTags, _ := execGit("config", "--get", gitconfigTags)
+	for _, tag := range strings.Split(rawTags, ",") {
+		tag = strings.TrimSpace(tag)
+		if tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+func saveGitPRConfig(tags []string) []string {
+	var xtags []string
+	for i := range tags {
+		tag := strings.TrimSpace(tags[i])
+		if tag != "" {
+			xtags = append(xtags, tag)
+		}
+	}
+	rawTags := strings.Join(xtags, ",")
+
+	must(execGit("config", "--unset-all", gitconfigTags))
+	must(execGit("config", "--add", gitconfigTags, rawTags))
+	return xtags
 }

@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	KeyTags      = "tags"
 	KeyRemoteRef = "remote-ref"
 	head         = "HEAD"
 )
@@ -30,7 +31,7 @@ func main() {
 	if !validateGitStatusClean() {
 		fmt.Println(`"git status reports uncommitted changes"`)
 		fmt.Print(`
-Hint: use "git add ." and "git stash" to clean up the repository
+Hint: use "git add -A" and "git stash" to clean up the repository
 `)
 		os.Exit(1)
 	}
@@ -48,17 +49,17 @@ Hint: use "git add ." and "git stash" to clean up the repository
 	// validate no duplicated remote ref
 	mapRefs := map[string]*Commit{}
 	for _, commit := range stackedCommits {
-		remoteRef := commit.GetAttr(KeyRemoteRef)
+		remoteRef := commit.GetRemoteRef()
 		if remoteRef == "" {
 			continue
 		}
 		if last, ok := mapRefs[remoteRef]; ok {
-			exitf("duplicated remote ref %q found for %q and %q", last.GetAttr(KeyRemoteRef), last.ShortHash(), commit.ShortHash())
+			exitf("duplicated remote ref %q found for %q and %q", last.GetRemoteRef(), last.ShortHash(), commit.ShortHash())
 		}
 		mapRefs[remoteRef] = commit
 	}
 
-	// create a PR for each commit with missing remote ref, one by one
+	// fill remote ref for each commit
 	for commitWithoutRemoteRef := findCommitWithoutRemoteRef(stackedCommits); commitWithoutRemoteRef != nil; commitWithoutRemoteRef = findCommitWithoutRemoteRef(stackedCommits) {
 		remoteRef := fmt.Sprintf("%v/%v", config.User, commitWithoutRemoteRef.ShortHash())
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
@@ -69,19 +70,28 @@ Hint: use "git add ." and "git stash" to clean up the repository
 		stackedCommits = must(getStackedCommits(originMain, head))
 	}
 
-	pushCommit := func(commit *Commit) (logs string, execFunc func()) {
-		args := fmt.Sprintf("%v:refs/heads/%v", commit.ShortHash(), commit.GetAttr(KeyRemoteRef))
-		logs = fmt.Sprintf("push -f %v %v", config.Remote, args)
-		return logs, func() {
-			out := must(execGit("push", "-f", config.Remote, args))
-			if strings.Contains(out, "remote: Create a pull request") {
-				must(0, githubCreatePRForCommit(commit))
-			}
+	pushCommit := func(commit, prev *Commit) {
+		remoteRef := commit.GetRemoteRef()
+		fmt.Printf("git push -f %v %v\n", config.Remote, remoteRef)
+
+		must(execGit("checkout", commit.Hash))                        // checkout
+		must(0, deleteBranch(remoteRef))                              // delete branch
+		must(execGit("checkout", "-b", remoteRef))                    // create branch
+		out := must(execGit("push", "-uf", config.Remote, remoteRef)) // push branch
+		defer func() {
+			must(execGit("checkout", commit.Hash))
+			must(execGit("branch", "-D", remoteRef))
+		}()
+
+		if strings.Contains(out, "remote: Create a pull request") {
+			must(0, githubCreatePRForCommit(commit, prev))
+		} else {
+			// must(0, githubPRUpdateBaseForCommit(commit, prev))
 		}
 	}
-	// push commits, concurrently
+	// push commits
 	{
-		var wg sync.WaitGroup
+		var prev *Commit
 		for _, commit := range stackedCommits {
 			// push my own commits
 			// and include others' commits if "--include-other-authors" is set
@@ -90,22 +100,16 @@ Hint: use "git add ." and "git stash" to clean up the repository
 				commit.Skip = true
 				continue
 			}
-			wg.Add(1)
-			logs, execFunc := pushCommit(commit)
-			fmt.Println(logs)
-			go func() {
-				defer wg.Done()
-				execFunc()
-			}()
+			pushCommit(commit, prev)
+			prev = commit
 		}
-		wg.Wait()
 	}
 
 	// checkout the latest stacked commit
 	must(execGit("checkout", stackedCommits[len(stackedCommits)-1].Hash))
 
 	// wait for 5 seconds
-	fmt.Println("waiting a bit...")
+	fmt.Printf("\nwaiting a bit...\n")
 	time.Sleep(5 * time.Second)
 
 	// update commits with PR numbers, concurrently
@@ -117,7 +121,15 @@ Hint: use "git add ." and "git stash" to clean up the repository
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					commit.PRNumber = must(githubGetPRNumberForCommit(commit))
+					var prev *Commit
+					for j := 0; j < i; j++ {
+						cm := stackedCommits[j]
+						if !cm.Skip {
+							prev = cm
+							break
+						}
+					}
+					commit.PRNumber = must(githubGetPRNumberForCommit(commit, prev))
 				}()
 			}
 		}
@@ -137,12 +149,7 @@ Hint: use "git add ." and "git stash" to clean up the repository
 			fmt.Printf("update pull request %v\n", prURL)
 			go func() {
 				defer wg.Done()
-
-				pullURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%v", config.Host, config.Repo, commit.PRNumber)
-				reviewURL := fmt.Sprintf("https://%v/%v/pull/%v/commits/%v", config.Host, config.Repo, commit.PRNumber, commit.Hash)
-
 				var bodyB strings.Builder
-				fprintf(&bodyB, "# 👉 [REVIEW](%s) 👈\n\n", reviewURL)
 				fprintf(&bodyB, "### %v\n---\n%v\n\n&nbsp;\n", commit.Title, commit.Message)
 				for _, cm := range stackedCommits {
 					cmURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, cm.PRNumber)
@@ -161,6 +168,7 @@ Hint: use "git add ." and "git stash" to clean up the repository
 						fprintf(&bodyB, " [%v (%v)](%v)\n", cm.Title, cmRef, cmURL)
 					}
 				}
+				pullURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%v", config.Host, config.Repo, commit.PRNumber)
 				must(httpRequest("PATCH", pullURL, map[string]any{
 					"title": commit.Title,
 					"body":  bodyB.String(),
@@ -170,6 +178,9 @@ Hint: use "git add ." and "git stash" to clean up the repository
 					must(execGh("pr", "ready", strconv.Itoa(commit.PRNumber), "--undo"))
 				} else {
 					must(execGh("pr", "ready", strconv.Itoa(commit.PRNumber)))
+				}
+				if tags := commit.GetTags(config.Tags...); len(tags) > 0 {
+					must(execGh("pr", "edit", strconv.Itoa(commit.PRNumber), "--add-label", strings.Join(tags, ",")))
 				}
 			}()
 		}
@@ -182,7 +193,7 @@ func findCommitWithoutRemoteRef(commits []*Commit) *Commit {
 		if commit.Skip {
 			continue
 		}
-		if commit.GetAttr(KeyRemoteRef) == "" {
+		if commit.GetRemoteRef() == "" {
 			return commit
 		}
 	}

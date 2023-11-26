@@ -77,17 +77,47 @@ Add `[draft]` to the commit title to mark it as draft.
 ```sh
 $ git-pr --help
 Usage: git pr [options]
+  -default-tags string
+    	Set default tags for the current repository (comma separated)
   -gh-hosts string
     	Path to config.json (default "~/.config/gh/hosts.yml")
-  -include-other-authors boolean
+  -include-other-authors
     	Create PRs for commits from other authors (default to false: skip)
   -main string
     	Main branch name (default "main")
   -remote string
     	Remote name (default "origin")
+  -t string
+    	Set tags for current stack, ignore default (comma separated)
   -timeout int
     	API call timeout in seconds (default 20)
   -v	Verbose output
+```
+
+### Tags/Labels
+
+#### Set default tags/labels for all PRs:
+
+**Notes**: These tags/labels must exist in your GitHub repository.
+
+```sh
+git pr -default-tags 'backend,api'
+```
+
+You can override default tags/labels by passing `-t`:
+
+```sh
+git pr -t 'frontend,bug'
+```
+
+#### Add tags for each PR:
+
+You can set different tags for each PR by adding tags at the end of the commit message:
+
+```
+commit message body
+
+Tags: backend, api
 ```
 
 ## How it works

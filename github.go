@@ -2,14 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/tidwall/gjson"
 )
 
 type NewPRBody struct {
@@ -17,31 +14,6 @@ type NewPRBody struct {
 	Body  string `json:"body"`
 	Head  string `json:"head"`
 	Base  string `json:"base"`
-}
-
-func githubGetLastPRNumber() (int, error) {
-	type PR struct{}
-
-	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls?state=all&sort=created&direction=desc&per_page=1", config.Host, config.Repo)
-	jsonBody, err := httpGET(ghURL)
-	if err != nil {
-		return 0, err
-	}
-
-	var out []PR
-	err = json.Unmarshal(jsonBody, &out)
-	if err != nil {
-		return 0, errorf("failed to parse request body: %v", err)
-	}
-	if len(out) == 0 {
-		return 0, nil
-	} else {
-		number := gjson.GetBytes(jsonBody, "0.number").Int()
-		if number == 0 {
-			return 0, errors.New("failed to find last pull request number")
-		}
-		return int(number), nil
-	}
 }
 
 func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
@@ -52,7 +24,9 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 		} `json:"head"`
 		UpdatedAt *time.Time
 	}
-
+	if commit.PRNumber != 0 {
+		return commit.PRNumber, nil
+	}
 	ghURL := fmt.Sprintf("https://api.%v/repos/%v/commits/%v/pulls?per_page=100", config.Host, config.Repo, commit.Hash)
 	jsonBody, err := httpGET(ghURL)
 	if err != nil && strings.Contains(err.Error(), "No commit found") {
@@ -99,6 +73,16 @@ func githubCreatePRForCommit(commit *Commit, prev *Commit) error {
 		args = append(args, "--label", strings.Join(tags, ","))
 	}
 	_, err := execGh(args...)
+	return err
+}
+
+func githubPRUpdateBaseForCommit(commit *Commit, prev *Commit) error {
+	base := config.MainBranch
+	if prev != nil {
+		base = prev.GetRemoteRef()
+	}
+	prNumber := must(githubGetPRNumberForCommit(commit, prev))
+	_, err := execGh("pr", "edit", strconv.Itoa(prNumber), "--base", base)
 	return err
 }
 

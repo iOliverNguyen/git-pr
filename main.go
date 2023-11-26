@@ -86,7 +86,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		if strings.Contains(out, "remote: Create a pull request") {
 			must(0, githubCreatePRForCommit(commit, prev))
 		} else {
-			// must(0, githubPRUpdateBaseForCommit(commit, prev))
+			must(0, githubPRUpdateBaseForCommit(commit, prev))
 		}
 	}
 	// push commits

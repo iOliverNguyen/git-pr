@@ -88,14 +88,18 @@ func githubGetPRNumberForCommit(commit *Commit) (int, error) {
 	}
 
 	// The commit was pushed and got "Everything up-to-date", try creating new pr
-	err = githubCreatePRForCommit(commit)
+	err = githubCreatePRForCommit(commit, config.Tags)
 	if err != nil {
 		return 0, err
 	}
 	return commit.PRNumber, nil
 }
 
-func githubCreatePRForCommit(commit *Commit) error {
+func githubCreatePRForCommit(commit *Commit, tags []string) error {
+	// execGh("")
+}
+
+func githubCreatePRForCommit0(commit *Commit, tags []string) error {
 	// attempt to create new PR
 	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls", config.Host, config.Repo)
 	body := NewPRBody{

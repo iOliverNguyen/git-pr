@@ -98,26 +98,26 @@ Usage: git pr [options]
 
 #### Set default tags/labels for all PRs:
 
-**Notes**: These tags/labels must exist in your GitHub repository.
+**Note**: These tags/labels must exist in your GitHub repository.
 
 ```sh
 git pr -default-tags 'backend,api'
 ```
 
-You can override default tags/labels by passing `-t`:
+You can override default tags/labels for the current stack by passing `-t`:
 
 ```sh
 git pr -t 'frontend,bug'
 ```
 
-#### Add tags for each PR:
+#### Add tags/labels for each PR:
 
-You can set different tags for each PR by adding tags at the end of the commit message:
+You can set different tags/labels for each PR by adding `Tags:` at the end of the commit message:
 
 ```
 commit message body
 
-Tags: backend, api
+Tags: bug, p0
 ```
 
 ## How it works
@@ -125,8 +125,8 @@ Tags: backend, api
 - It associates each commit with a pull request by adding `Remote-Ref: <remote-branch>` to the commit message.
 - It push each commit to GitHub and create or update the corresponding pull request.
 - It detects the login user from [github-cli](https://cli.github.com/).
-- It adds a 👉 REVIEW 👈 link, which reviewers can click to access the corresponding commit for that PR and add comments.
 - It adds a list of all PRs for that stack at the end of each PR.
+- ~~It adds a 👉 REVIEW 👈 link, which reviewers can click to access the corresponding commit for that PR and add comments.~~ 👉 _This behavior changed to stacking each PR on top of the previous PR and the review link is no longer necessary._
 
 ## License
 
@@ -134,7 +134,8 @@ MIT
 
 ## Author
 
-I'm Oliver Nguyen. A software maker working mostly in Go and JavaScript. I enjoy learning and seeing a better version of my self each
+I'm Oliver Nguyen. A software maker working mostly in Go and JavaScript. I enjoy learning and seeing a better version of
+my self each
 day. Occasionally spin off new open source projects. Share knowledge and thoughts during my journey. Visit my blog at
 [olivernguyen.io](https://olivernguyen.io), or connect with my on [GitHub](iOliverNguyen),
 [LinkedIn](https://www.linkedin.com/in/iOliverNguyen/), [Twitter](https://twitter.com/_OliverNguyen),

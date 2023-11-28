@@ -88,7 +88,7 @@ func LoadConfig() (config Config) {
 	if err != nil {
 		exitf("not a git repository")
 	}
-	regexpURL := regexp.MustCompile(`git@([^:]+):([^/]+)/([^.]+)(\.git)?`)
+	regexpURL := regexp.MustCompile(`git@([^:\s]+):([^/\s]+)/([^.\s]+)(\.git)?`)
 	matches := regexpURL.FindStringSubmatch(out)
 	if matches == nil {
 		exitf("failed to parse remote url: expect git@<host>:<user>/<repo> (got %q)", out)

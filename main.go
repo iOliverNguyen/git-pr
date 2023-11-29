@@ -149,7 +149,11 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			fmt.Printf("update pull request %v\n", prURL)
 			go func() {
 				defer wg.Done()
+				pullURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%v", config.Host, config.Repo, commit.PRNumber)
+				reviewURL := fmt.Sprintf("https://%v/%v/pull/%v/commits/%v", config.Host, config.Repo, commit.PRNumber, commit.Hash)
+
 				var bodyB strings.Builder
+				fprintf(&bodyB, "# 👉 [REVIEW](%s) 👈\n\n", reviewURL)
 				fprintf(&bodyB, "### %v\n---\n%v\n\n&nbsp;\n", commit.Title, commit.Message)
 				for _, cm := range stackedCommits {
 					cmURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, cm.PRNumber)
@@ -168,7 +172,6 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 						fprintf(&bodyB, " [%v (%v)](%v)\n", cm.Title, cmRef, cmURL)
 					}
 				}
-				pullURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%v", config.Host, config.Repo, commit.PRNumber)
 				must(httpRequest("PATCH", pullURL, map[string]any{
 					"title": commit.Title,
 					"body":  bodyB.String(),

@@ -109,7 +109,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	must(execGit("checkout", stackedCommits[len(stackedCommits)-1].Hash))
 
 	// wait for 5 seconds
-	fmt.Printf("\nwaiting a bit...\n")
+	fmt.Printf("waiting a bit...\n")
 	time.Sleep(5 * time.Second)
 
 	// update commits with PR numbers, concurrently

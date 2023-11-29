@@ -209,7 +209,7 @@ func saveGitPRConfig(tags []string) []string {
 	}
 	rawTags := strings.Join(xtags, ",")
 
-	must(execGit("config", "--unset-all", gitconfigTags))
+	_, _ = execGit("config", "--unset-all", gitconfigTags)
 	must(execGit("config", "--add", gitconfigTags, rawTags))
 	return xtags
 }

@@ -72,6 +72,7 @@ func githubCreatePRForCommit(commit *Commit, prev *Commit) error {
 	if tags := commit.GetTags(config.Tags...); len(tags) > 0 {
 		args = append(args, "--label", strings.Join(tags, ","))
 	}
+	fmt.Printf("create pull request for %q\n", commit.Title)
 	_, err := execGh(args...)
 	return err
 }

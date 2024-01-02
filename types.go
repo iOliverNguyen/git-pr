@@ -58,6 +58,9 @@ func (commit *Commit) GetAttr(key string) string {
 }
 
 func (commit *Commit) GetRemoteRef() string {
+	if commit == nil {
+		return ""
+	}
 	return commit.GetAttr(KeyRemoteRef)
 }
 

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 type NewPRBody struct {
@@ -64,23 +66,27 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 }
 
 func githubCreatePRForCommit(commit *Commit, prev *Commit) error {
-	base := config.MainBranch
-	if prev != nil {
-		base = prev.GetRemoteRef()
+	// attempt to create new PR
+	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls", config.Host, config.Repo)
+	body := NewPRBody{
+		Title: commit.Title,
+		Body:  commit.Message,
+		Head:  commit.GetAttr(KeyRemoteRef),
+		Base:  xif(prev != nil, prev.GetRemoteRef(), config.MainBranch),
 	}
-	args := []string{"pr", "create", "--title", commit.Title, "--body", "", "--head", commit.GetRemoteRef(), "--base", base}
-	if tags := commit.GetTags(config.Tags...); len(tags) > 0 {
-		args = append(args, "--label", strings.Join(tags, ","))
+	fmt.Printf("create pull request for %q\n", commit.Title)
+	jsonBody := must(httpPOST(ghURL, body))
+	number := gjson.GetBytes(jsonBody, "number").Int()
+	if number == 0 {
+		return errorf("unexpected")
 	}
-	_, err := execGh(args...)
-	return err
+	commit.PRNumber = int(number)
+	time.Sleep(1 * time.Second)
+	return nil
 }
 
 func githubPRUpdateBaseForCommit(commit *Commit, prev *Commit) error {
-	base := config.MainBranch
-	if prev != nil {
-		base = prev.GetRemoteRef()
-	}
+	base := xif(prev != nil, prev.GetRemoteRef(), config.MainBranch)
 	prNumber := must(githubGetPRNumberForCommit(commit, prev))
 	_, err := execGh("pr", "edit", strconv.Itoa(prNumber), "--base", base)
 	return err

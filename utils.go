@@ -60,6 +60,14 @@ func panicf(err error, msg string, args ...any) {
 
 	panic(fmt.Sprintf(msg, args...))
 }
+
+func xif[T any](cond bool, a, b T) T {
+	if cond {
+		return a
+	}
+	return b
+}
+
 func revert[T any](list []T) []T {
 	out := make([]T, len(list))
 	for i, v := range list {

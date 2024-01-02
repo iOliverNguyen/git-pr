@@ -70,28 +70,33 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		stackedCommits = must(getStackedCommits(originMain, head))
 	}
 
-	pushCommit := func(commit, prev *Commit) {
-		remoteRef := commit.GetRemoteRef()
-		fmt.Printf("git push -f %v %v\n", config.Remote, remoteRef)
-
-		must(execGit("checkout", commit.Hash))                        // checkout
-		must(0, deleteBranch(remoteRef))                              // delete branch
-		must(execGit("checkout", "-b", remoteRef))                    // create branch
-		out := must(execGit("push", "-uf", config.Remote, remoteRef)) // push branch
-		defer func() {
-			must(execGit("checkout", commit.Hash))
-			must(execGit("branch", "-D", remoteRef))
-		}()
-
-		if strings.Contains(out, "remote: Create a pull request") {
-			must(0, githubCreatePRForCommit(commit, prev))
-		} else {
-			must(0, githubPRUpdateBaseForCommit(commit, prev))
+	prevCommit := func(commit *Commit) (prev *Commit) {
+		for _, cm := range stackedCommits {
+			if cm == commit {
+				return prev
+			}
+			if cm.Skip {
+				continue
+			}
+			prev = cm
+		}
+		panic("not found")
+	}
+	pushCommit := func(commit *Commit) (logs string, execFunc func()) {
+		args := fmt.Sprintf("%v:refs/heads/%v", commit.ShortHash(), commit.GetAttr(KeyRemoteRef))
+		logs = fmt.Sprintf("push -f %v %v", config.Remote, args)
+		return logs, func() {
+			out := must(execGit("push", "-f", config.Remote, args))
+			if strings.Contains(out, "remote: Create a pull request") {
+				must(0, githubCreatePRForCommit(commit, prevCommit(commit)))
+			} else {
+				must(0, githubPRUpdateBaseForCommit(commit, prevCommit(commit)))
+			}
 		}
 	}
-	// push commits
+	// push commits, concurrently
 	{
-		var prev *Commit
+		var wg sync.WaitGroup
 		for _, commit := range stackedCommits {
 			// push my own commits
 			// and include others' commits if "--include-other-authors" is set
@@ -100,9 +105,15 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 				commit.Skip = true
 				continue
 			}
-			pushCommit(commit, prev)
-			prev = commit
+			wg.Add(1)
+			logs, execFunc := pushCommit(commit)
+			fmt.Println(logs)
+			go func() {
+				defer wg.Done()
+				execFunc()
+			}()
 		}
+		wg.Wait()
 	}
 
 	// checkout the latest stacked commit

@@ -15,15 +15,16 @@ type NewPRBody struct {
 	Head  string `json:"head"`
 	Base  string `json:"base"`
 }
+type PR struct {
+	Number int    `json:"number"`
+	Body   string `json:"body"`
+	Head   struct {
+		Ref string `json:"ref"`
+	} `json:"head"`
+	UpdatedAt *time.Time
+}
 
 func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
-	type PR struct {
-		Number int `json:"number"`
-		Head   struct {
-			Ref string `json:"ref"`
-		} `json:"head"`
-		UpdatedAt *time.Time
-	}
 	if commit.PRNumber != 0 {
 		return commit.PRNumber, nil
 	}
@@ -61,6 +62,22 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 		return 0, err
 	}
 	return commit.PRNumber, nil
+}
+
+func githubGetPRByNumber(number int) (*PR, error) {
+	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%d", config.Host, config.Repo, number)
+	jsonBody, err := httpGET(ghURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var out PR
+	err = json.Unmarshal(jsonBody, &out)
+	if err != nil {
+		return nil, errorf("failed to parse request body: %v", err)
+	}
+
+	return &out, nil
 }
 
 func githubCreatePRForCommit(commit *Commit, prev *Commit) error {

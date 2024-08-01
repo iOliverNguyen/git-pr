@@ -30,30 +30,29 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 	}
 	ghURL := fmt.Sprintf("https://api.%v/repos/%v/commits/%v/pulls?per_page=100", config.Host, config.Repo, commit.Hash)
 	jsonBody, err := httpGET(ghURL)
-	if err != nil && strings.Contains(err.Error(), "No commit found") {
+	switch {
+	case err != nil && strings.Contains(err.Error(), "No commit found"):
 		return githubSearchPRNumberForCommit(commit)
-	}
-	if err != nil {
+	case err != nil:
 		return 0, err
 	}
-	if err == nil {
-		var out []PR
-		err = json.Unmarshal(jsonBody, &out)
-		if err != nil {
-			return 0, errorf("failed to parse request body: %v", err)
-		}
 
-		remoteRef := commit.GetRemoteRef()
-		if remoteRef != "" {
-			for _, pr := range out {
-				if pr.Head.Ref == remoteRef {
-					return pr.Number, nil
-				}
+	var out []PR
+	err = json.Unmarshal(jsonBody, &out)
+	if err != nil {
+		return 0, errorf("failed to parse request body: %v", err)
+	}
+
+	remoteRef := commit.GetRemoteRef()
+	if remoteRef != "" {
+		for _, pr := range out {
+			if pr.Head.Ref == remoteRef {
+				return pr.Number, nil
 			}
 		}
-		if commit.Skip {
-			return githubSearchPRNumberForCommit(commit)
-		}
+	}
+	if commit.Skip {
+		return githubSearchPRNumberForCommit(commit)
 	}
 
 	// The commit was pushed and got "Everything up-to-date", try creating new pr

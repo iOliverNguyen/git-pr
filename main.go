@@ -20,6 +20,15 @@ const (
 	head         = "HEAD"
 )
 
+const bodyTemplate = `
+# Summary
+
+<br>
+<br>
+<br>
+<br>
+`
+
 var regexpDraft = regexp.MustCompile(`(?i)\[draft]`)
 
 // select emojis
@@ -103,6 +112,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			shouldPush := isMyOwnCommit(commit) || config.IncludeOtherAuthors
 			if !shouldPush {
 				commit.Skip = true
+				fmt.Printf("skip \"%v\" (not my commit)\n", shortenTitle(commit.Title))
 				continue
 			}
 			wg.Add(1)
@@ -164,26 +174,65 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 				pr := must(githubGetPRByNumber(commit.PRNumber))
 				pullURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%v", config.Host, config.Repo, commit.PRNumber)
 
+				parsedBody := func() string {
+					footerIndex := prDelimiterRegexp.FindStringIndex(pr.Body)
+					if len(footerIndex) > 0 {
+						startIdx := footerIndex[0]
+						return strings.TrimSpace(pr.Body[:startIdx])
+					}
+					return pr.Body
+				}()
+
+				// generate the PR's body:
+				// - if the user edited the body on github, keep the body (+ commit message)
+				// - if the user didn't edit the body, but set the commit message, keep the commit message
+				// - if the user didn't edit the body and didn't set the commit message, use the default template
 				var bodyB strings.Builder
-				footerIndex := strings.Index(pr.Body, prDelimiterToGenerated)
-				if footerIndex != -1 {
-					fprintf(&bodyB, pr.Body[:footerIndex])
-				} else if len(pr.Body) == 0 {
-					fprintf(&bodyB, "# Summary\n\n\n")
+				prf := func(msg string, args ...any) { fprintf(&bodyB, msg, args...) }
+				prLine := func() { prf("---\n\n") }
+				prDelim := func() { prf("%v\n\n", prDelimiterToGenerated) }
+				prMessage := func() { prf("%v\n\n", commit.Message) }
+				if parsedBody != "" {
+					prf("%v\n\n\n\n\n\n\n\n", parsedBody)
+					prDelim()
+					prLine()
+					prMessage()
+				} else if commit.Message == "" {
+
+					prf("%v\n\n\n\n\n\n\n\n", bodyTemplate) // TODO: config template
+					prDelim()
+					prLine()
+					prMessage()
+				} else {
+					prDelim()
+					prMessage()
+					prLine()
 				}
-				fprintf(&bodyB, "%v\n\n---\n%v\n", prDelimiterToGenerated, commit.Message)
+
+				// generate list of PRs:
+				// - for the current PR with an emoji, mark with an emoji and point to the commit
+				// - for other PRs, if it's from the author, use the PR number
+				// - otherwise, use the commit title and hash
 				for _, cm := range stackedCommits {
-					cmRef := cm.Hash
-					if cm.PRNumber != 0 {
+					var cmRef string
+					cmURL := fmt.Sprintf("https://%v/%v/commit/%v", config.Host, config.Repo, cm.ShortHash())
+					switch {
+					case cm.PRNumber != 0 && cm.Hash == commit.Hash:
+						cmRef = fmt.Sprintf("#%v (👉[%v](%v))", cm.PRNumber, cm.ShortHash(), cmURL)
+					case cm.PRNumber != 0:
 						cmRef = fmt.Sprintf("#%v", cm.PRNumber)
+					default:
+						cmRef = fmt.Sprintf("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[%v (%v)](%v)", cm.Title, cm.ShortHash(), cmURL)
 					}
 					if cm.Hash == commit.Hash {
-						fprintf(&bodyB, "* "+emojisx[commit.PRNumber%len(emojisx)])
+						prf("* " + emojisx[commit.PRNumber%len(emojisx)])
 					} else {
-						fprintf(&bodyB, "* ◻️")
+						prf("* ◻️")
 					}
-					fprintf(&bodyB, " %v\n", cmRef)
+					prf(" %v\n", cmRef)
 				}
+
+				// update the PR
 				must(httpRequest("PATCH", pullURL, map[string]any{
 					"title": commit.Title,
 					"body":  bodyB.String(),
@@ -224,9 +273,16 @@ func isMyOwnCommit(commit *Commit) bool {
 	return commit.AuthorEmail == config.Email
 }
 
-func coalesce(a int, b string) string {
-	if a != 0 {
-		return fmt.Sprint(a)
+func shortenTitle(title string) string {
+	const Max = 36
+	if len(title) <= Max {
+		return title
 	}
-	return b
+	title = title[:Max]
+	idx := strings.LastIndexByte(title, ' ')
+	if idx == -1 {
+		return title + "..."
+	} else {
+		return title[:idx] + " ..."
+	}
 }

@@ -26,6 +26,7 @@ var (
 )
 
 const gitconfigTags = "git-pr.tags"
+const prDelimiterToGenerated = "[//]: # (BEGIN GIT-PR FOOTER)"
 
 type Config struct {
 	Repo       string // git
@@ -91,7 +92,12 @@ func LoadConfig() (config Config) {
 	regexpURL := regexp.MustCompile(`git@([^:\s]+):([^/\s]+)/([^.\s]+)(\.git)?`)
 	matches := regexpURL.FindStringSubmatch(out)
 	if matches == nil {
-		exitf("failed to parse remote url: expect git@<host>:<user>/<repo> (got %q)", out)
+		// match https url
+		regexpURL = regexp.MustCompile(`https://(github\.com)/([^/\s]+)\/([^.\s]+)(\.git)?`)
+		matches = regexpURL.FindStringSubmatch(out)
+		if matches == nil {
+			exitf("failed to parse remote url: expect git@<host>:<user>/<repo> or https://github.com/<user>/<repo> (got %q)", out)
+		}
 	}
 	config.Host = matches[1]
 	config.Repo = matches[2] + "/" + matches[3]

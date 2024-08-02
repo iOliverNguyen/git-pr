@@ -223,7 +223,9 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 					case cm.PRNumber != 0:
 						cmRef = fmt.Sprintf("#%v", cm.PRNumber)
 					default:
-						cmRef = fmt.Sprintf(`&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>[%v (%v)](%v)</b>&nbsp;&nbsp; ${\textsf{\color{lightblue}· %v}}$`, cm.Title, cm.ShortHash(), cmURL, cm.AuthorEmail)
+						first, last := splitEmail(cm.AuthorEmail)
+						formattedEmail := first + "&#x200B;" + last // zero-width space to prevent creating email link
+						cmRef = fmt.Sprintf(`&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>[%v (%v)](%v)</b>&nbsp;&nbsp; ${\textsf{\color{lightblue}· %v}}$`, cm.Title, cm.ShortHash(), cmURL, formattedEmail)
 					}
 					if cm.Hash == commit.Hash {
 						prf("* " + emojisx[commit.PRNumber%len(emojisx)])
@@ -272,6 +274,13 @@ func validateGitStatusClean() bool {
 
 func isMyOwnCommit(commit *Commit) bool {
 	return commit.AuthorEmail == config.Email
+}
+
+func splitEmail(email string) (string, string) {
+	if idx := strings.Index(email, "@"); idx >= 0 {
+		return email[:idx], email[idx:]
+	}
+	return email, ""
 }
 
 func shortenTitle(title string) string {

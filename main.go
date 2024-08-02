@@ -112,7 +112,8 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			shouldPush := isMyOwnCommit(commit) || config.IncludeOtherAuthors
 			if !shouldPush {
 				commit.Skip = true
-				fmt.Printf("skip \"%v\" (not my commit)\n", shortenTitle(commit.Title))
+				author := coalesce(commit.AuthorEmail, "@unknown")
+				fmt.Printf("skip \"%v\" (%v)\n", shortenTitle(commit.Title), author)
 				continue
 			}
 			wg.Add(1)
@@ -222,7 +223,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 					case cm.PRNumber != 0:
 						cmRef = fmt.Sprintf("#%v", cm.PRNumber)
 					default:
-						cmRef = fmt.Sprintf("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[%v (%v)](%v)", cm.Title, cm.ShortHash(), cmURL)
+						cmRef = fmt.Sprintf(`&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>[%v (%v)](%v)</b>&nbsp;&nbsp; ${\textsf{\color{lightblue}· %v}}$`, cm.Title, cm.ShortHash(), cmURL, cm.AuthorEmail)
 					}
 					if cm.Hash == commit.Hash {
 						prf("* " + emojisx[commit.PRNumber%len(emojisx)])
@@ -285,4 +286,11 @@ func shortenTitle(title string) string {
 	} else {
 		return title[:idx] + " ..."
 	}
+}
+
+func coalesce(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

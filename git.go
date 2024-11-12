@@ -12,6 +12,7 @@ var (
 	regexpAuthor     = regexp.MustCompile(`^Author: (.*) <(.*)>$`)
 	regexpDate       = regexp.MustCompile(`^Date:   (.*)$`)
 	regexpKeyVal     = regexp.MustCompile(`^\s+([a-zA-Z0-9-]+):(.*)$`)
+	dateLayouts      = []string{"Mon Jan _2 15:04:05 2006 -0700", "2006-01-02 15:04:05 -0700"}
 )
 
 func gitLogs(size int, extra ...string) (string, error) {
@@ -68,7 +69,14 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 			out.AuthorEmail = m[2]
 		}
 		if m := regexpDate.FindStringSubmatch(line); m != nil {
-			date, err := time.Parse("Mon Jan _2 15:04:05 2006 -0700", m[1])
+			var date time.Time
+			var err error
+			for _, layout := range dateLayouts {
+				date, err = time.Parse(layout, m[1])
+				if err == nil {
+					break
+				}
+			}
 			if err != nil {
 				panicf(nil, "failed to parse time from %q", m[1])
 			}

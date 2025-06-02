@@ -129,7 +129,16 @@ Run the following command and choose your github host:
 	}
 	config.User = ghHost.User
 	config.Token = ghHost.OauthToken
-	config.Email = must(getGitConfig("user.email"))
+	email, err := getGitConfig("user.email")
+	if err != nil {
+		fmt.Println("user.email not found in git config")
+		os.Exit(1)
+	}
+	if email == "" {
+		fmt.Println("user.email found in git config, but it's empty")
+		os.Exit(1)
+	}
+	config.Email = email
 	if config.Token == "" { // try getting from keyring
 		key := "gh:" + config.Host
 		config.Token, _ = keyring.Get(key, "")

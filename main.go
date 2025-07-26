@@ -73,7 +73,8 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		remoteRef := fmt.Sprintf("%v/%v", config.User, commitWithoutRemoteRef.ShortHash())
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
-		must(execGit("reword", commitWithoutRemoteRef.Hash, "-m", commitWithoutRemoteRef.FullMessage()))
+		must(execGit("checkout", commitWithoutRemoteRef.Hash))
+		must(execGit("commit", "--amend", "-m", commitWithoutRemoteRef.FullMessage()))
 
 		time.Sleep(500 * time.Millisecond)
 		stackedCommits = must(getStackedCommits(originMain, head))

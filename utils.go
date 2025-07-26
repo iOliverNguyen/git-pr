@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -42,13 +42,14 @@ func debugf(msg string, args ...any) {
 }
 
 func exitf(msg string, args ...any) {
-	fmt.Printf(msg+"\n", args...)
+	msg = trimPrefixNewline(msg) + "\n"
+	fmt.Printf(msg, args...)
 	os.Exit(1)
 }
 
 func must[T any](v T, err error) T {
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("ERROR: %v", err))
 	}
 	return v
 }
@@ -57,8 +58,7 @@ func panicf(err error, msg string, args ...any) {
 	if err != nil {
 		fmt.Println("ERROR: ", err)
 	}
-
-	panic(fmt.Sprintf(msg, args...))
+	panic("ERROR: " + fmt.Sprintf(msg, args...))
 }
 
 func xif[T any](cond bool, a, b T) T {
@@ -102,15 +102,33 @@ func maxAttrsLength(attrs []KeyVal) int {
 	return maxL
 }
 
-func execGit(args ...string) (string, error) {
-	return execCommand("git", args...)
+func findRepoRoot() (string, error) {
+	output, err := execCmd("git", "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", errors.New(output)
+	}
+	return strings.TrimSpace(output), nil
 }
 
-func execGh(args ...string) (string, error) {
-	return execCommand("gh", args...)
+var rePrefixNewline = regexp.MustCompile(`^\n *`)
+
+func trimPrefixNewline(s string) string {
+	return rePrefixNewline.ReplaceAllString(s, "")
 }
+
+func execGit(args ...string) (string, error) { return execCommand("git", args...) }
+func execGh(args ...string) (string, error)  { return execCommand("gh", args...) }
+func execJj(args ...string) (string, error)  { return execCommand("jj", args...) }
 
 func execCommand(name string, args ...string) (string, error) {
+	output, err := execCmd(name, args...)
+	if err != nil {
+		fmt.Println(output)
+	}
+	return output, err
+}
+
+func execCmd(name string, args ...string) (string, error) {
 	if config.Verbose {
 		fmt.Print(name, " ")
 		for _, arg := range args {
@@ -122,12 +140,6 @@ func execCommand(name string, args ...string) (string, error) {
 		}
 		fmt.Println()
 	}
-	stdout := bytes.Buffer{}
-	cmd := exec.Command(name, args...)
-	cmd.Stdout, cmd.Stderr = &stdout, &stdout
-	err := cmd.Run()
-	if err != nil {
-		fmt.Println(stdout.String())
-	}
-	return stdout.String(), err
+	output, err := exec.Command(name, args...).CombinedOutput()
+	return string(output), err
 }

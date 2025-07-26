@@ -32,6 +32,7 @@ var prDelimiterRegexp = regexp.MustCompile(`\[//]:[^\n]+\bGIT-PR\b`)
 
 type Config struct {
 	Repo       string // git
+	RepoDir    string // git
 	Remote     string // flag
 	MainBranch string // flag
 
@@ -87,10 +88,16 @@ func LoadConfig() (config Config) {
 	}
 
 	// detect repository
-	out, err := execGit("remote", "show", config.Remote)
+	out, err := execCmd("git", "remote", "-v")
 	if err != nil {
-		exitf("not a git repository")
+		exitf(`
+git-pr is a tool for submitting git commits as GitHub stacked pull requests (stacked PRs).
+
+ERROR: You need to run it in a git repository with remote configured.
+
+For more information, see "git-pr --help".`)
 	}
+
 	regexpURL := regexp.MustCompile(`git@([^:\s]+):([^/\s]+)/([^.\s]+)(\.git)?`)
 	matches := regexpURL.FindStringSubmatch(out)
 	if matches == nil {
@@ -103,18 +110,18 @@ func LoadConfig() (config Config) {
 	}
 	config.Host = matches[1]
 	config.Repo = matches[2] + "/" + matches[3]
+	config.RepoDir = must(findRepoRoot())
 
 	// parse github config
 	ghHosts, err := LoadGitHubConfig(*flagGitHubHosts)
 	if err != nil {
-		fmt.Printf("failed to load GitHub config at %v: %v\n", *flagGitHubHosts, err)
+		exitf("failed to load GitHub config at %v: %v\n", *flagGitHubHosts, err)
 		fmt.Printf(`
 Hint: Install github client and login with your account
       https://github.com/cli/cli#installation
 Then:
       gh auth login
 `)
-		os.Exit(1)
 	}
 	ghHost := ghHosts[config.Host]
 	if ghHost == nil {

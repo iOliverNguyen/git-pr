@@ -6,7 +6,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,11 +32,10 @@ func main() {
 
 	// ensure no uncommitted changes
 	if !validateGitStatusClean() {
-		fmt.Println(`"git status reports uncommitted changes"`)
-		fmt.Print(`
+		exitf(`ERROR: git status reports uncommitted changes
+
 Hint: use "git add -A" and "git stash" to clean up the repository
 `)
-		os.Exit(1)
 	}
 
 	originMain := fmt.Sprintf("%v/%v", config.git.remote, config.git.remoteTrunk)

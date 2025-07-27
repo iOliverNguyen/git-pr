@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -41,8 +40,11 @@ func debugf(msg string, args ...any) {
 }
 
 func exitf(msg string, args ...any) {
-	msg = trimPrefixNewline(msg) + "\n"
+	msg = trimPrefixNewline(msg)
 	fmt.Printf(msg, args...)
+	if !strings.HasSuffix(msg, "\n") {
+		fmt.Println()
+	}
 	os.Exit(1)
 }
 
@@ -99,14 +101,6 @@ func maxAttrsLength(attrs []KeyVal) int {
 		}
 	}
 	return maxL
-}
-
-func findRepoDir() (string, error) {
-	output, err := _execCmd("git", "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", errors.New(output)
-	}
-	return strings.TrimSpace(output), nil
 }
 
 var rePrefixNewline = regexp.MustCompile(`^\n *`)

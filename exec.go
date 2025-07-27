@@ -37,5 +37,5 @@ func _execCmd(name string, args ...string) (string, error) {
 	if config.verbose {
 		fmt.Println(string(output))
 	}
-	return string(output), err
+	return strings.TrimSpace(string(output)), err
 }

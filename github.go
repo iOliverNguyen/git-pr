@@ -28,7 +28,7 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 	if commit.PRNumber != 0 {
 		return commit.PRNumber, nil
 	}
-	ghURL := fmt.Sprintf("https://api.%v/repos/%v/commits/%v/pulls?per_page=100", config.Host, config.Repo, commit.Hash)
+	ghURL := fmt.Sprintf("https://api.%v/repos/%v/commits/%v/pulls?per_page=100", config.git.host, config.git.repo, commit.Hash)
 	jsonBody, err := httpGET(ghURL)
 	switch {
 	case err != nil && strings.Contains(err.Error(), "No commit found"):
@@ -64,7 +64,7 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 }
 
 func githubGetPRByNumber(number int) (*PR, error) {
-	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%d", config.Host, config.Repo, number)
+	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%d", config.git.host, config.git.repo, number)
 	jsonBody, err := httpGET(ghURL)
 	if err != nil {
 		return nil, err
@@ -80,23 +80,23 @@ func githubGetPRByNumber(number int) (*PR, error) {
 }
 
 func githubCreatePRForCommit(commit *Commit, prev *Commit) error {
-	base := config.MainBranch
+	base := config.git.remoteTrunk
 	if prev != nil {
 		base = prev.GetRemoteRef()
 	}
 	args := []string{"pr", "create", "--title", commit.Title, "--body", "", "--head", commit.GetRemoteRef(), "--base", base}
-	if tags := commit.GetTags(config.Tags...); len(tags) > 0 {
+	if tags := commit.GetTags(config.tags...); len(tags) > 0 {
 		args = append(args, "--label", strings.Join(tags, ","))
 	}
 	fmt.Printf("create pull request for %q\n", commit.Title)
-	_, err := execGh(args...)
+	_, err := gh(args...)
 	return err
 }
 
 func githubPRUpdateBaseForCommit(commit *Commit, prev *Commit) error {
-	base := xif(prev != nil, prev.GetRemoteRef(), config.MainBranch)
+	base := xif(prev != nil, prev.GetRemoteRef(), config.git.remoteTrunk)
 	prNumber := must(githubGetPRNumberForCommit(commit, prev))
-	_, err := execGh("pr", "edit", strconv.Itoa(prNumber), "--base", base)
+	_, err := gh("pr", "edit", strconv.Itoa(prNumber), "--base", base)
 	return err
 }
 
@@ -104,7 +104,7 @@ var regexpNumber = regexp.MustCompile(`[0-9]+`)
 
 func githubSearchPRNumberForCommit(commit *Commit) (int, error) {
 	query := fmt.Sprintf("in:title %v", commit.Title)
-	result, err := execGh("pr", "list", "--limit=1", "--search", query)
+	result, err := gh("pr", "list", "--limit=1", "--search", query)
 	if err != nil {
 		debugf("failed to search PR for commit (ignored) %q: %v\n", commit.Title, err)
 		return 0, nil

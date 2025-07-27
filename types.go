@@ -112,7 +112,7 @@ func (commit *Commit) FullMessage() string {
 	for _, kv := range commit.Attrs {
 		fprintf(&b, format, formatKey(kv[0]), kv[1])
 	}
-	if config.Verbose {
+	if config.verbose {
 		fmt.Println("\n" + b.String() + "\n")
 	}
 	return strings.TrimSpace(b.String())

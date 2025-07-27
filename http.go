@@ -19,7 +19,7 @@ func httpPOST(url string, body any) ([]byte, error) {
 }
 
 func httpRequest(method string, url string, body any) (_ []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), config.timeout)
 	defer cancel()
 
 	var bodyReader io.Reader
@@ -36,7 +36,7 @@ func httpRequest(method string, url string, body any) (_ []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+config.Token)
+	req.Header.Set("Authorization", "Bearer "+config.gh.token)
 
 	debugf("-> %v %v\n", method, url)
 	if bodyJSON != nil {

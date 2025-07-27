@@ -28,8 +28,6 @@ const bodyTemplate = `
 
 var regexpDraft = regexp.MustCompile(`(?i)\[draft]`)
 
-// select emojis
-
 func main() {
 	config = LoadConfig()
 
@@ -42,7 +40,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		os.Exit(1)
 	}
 
-	originMain := fmt.Sprintf("%v/%v", config.Remote, config.MainBranch)
+	originMain := fmt.Sprintf("%v/%v", config.git.remote, config.git.remoteTrunk)
 	stackedCommits := must(getStackedCommits(originMain, head))
 	if len(stackedCommits) == 0 {
 		exitf("no commits to submit")
@@ -67,7 +65,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 	// fill remote ref for each commit
 	for commitWithoutRemoteRef := findCommitWithoutRemoteRef(stackedCommits); commitWithoutRemoteRef != nil; commitWithoutRemoteRef = findCommitWithoutRemoteRef(stackedCommits) {
-		remoteRef := fmt.Sprintf("%v/%v", config.User, commitWithoutRemoteRef.ShortHash())
+		remoteRef := fmt.Sprintf("%v/%v", config.git.user, commitWithoutRemoteRef.ShortHash())
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
 		must(execGit("reword", commitWithoutRemoteRef.Hash, "-m", commitWithoutRemoteRef.FullMessage()))
@@ -90,7 +88,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	}
 	pushCommit := func(commit *Commit) (logs string, execFunc func()) {
 		args := fmt.Sprintf("%v:refs/heads/%v", commit.ShortHash(), commit.GetAttr(KeyRemoteRef))
-		logs = fmt.Sprintf("push -f %v %v", config.Remote, args)
+		logs = fmt.Sprintf("push -f %v %v", config.git.remote, args)
 		return logs, func() {
 			out := must(execGit("push", "-f", config.Remote, args))
 			time.Sleep(1 * time.Second)
@@ -107,7 +105,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		for _, commit := range stackedCommits {
 			// push my own commits
 			// and include others' commits if "--include-other-authors" is set
-			shouldPush := isMyOwnCommit(commit) || config.IncludeOtherAuthors
+			shouldPush := isMyOwnCommit(commit) || config.includeOtherAuthors
 			if !shouldPush {
 				commit.Skip = true
 				author := coalesce(commit.AuthorEmail, "@unknown")
@@ -126,7 +124,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	}
 
 	// checkout the latest stacked commit
-	must(execGit("checkout", stackedCommits[len(stackedCommits)-1].Hash))
+	must(git("checkout", stackedCommits[len(stackedCommits)-1].Hash))
 
 	// wait for 5 seconds
 	fmt.Printf("waiting a bit...\n")
@@ -165,13 +163,13 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			}
 			wg.Add(1)
 			commit := commit
-			prURL := fmt.Sprintf("https://%v/%v/pull/%v", config.Host, config.Repo, commit.PRNumber)
+			prURL := fmt.Sprintf("https://%v/%v/pull/%v", config.git.host, config.git.repo, commit.PRNumber)
 			fmt.Printf("update pull request %v\n", prURL)
 			go func() {
 				defer wg.Done()
 
 				pr := must(githubGetPRByNumber(commit.PRNumber))
-				pullURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%v", config.Host, config.Repo, commit.PRNumber)
+				pullURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%v", config.git.host, config.git.repo, commit.PRNumber)
 
 				parsedBody := func() string {
 					footerIndex := prDelimiterRegexp.FindStringIndex(pr.Body)
@@ -214,7 +212,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 				// - otherwise, use the commit title and hash
 				for _, cm := range stackedCommits {
 					var cmRef string
-					cmURL := fmt.Sprintf("https://%v/%v/commit/%v", config.Host, config.Repo, cm.ShortHash())
+					cmURL := fmt.Sprintf("https://%v/%v/commit/%v", config.git.host, config.git.repo, cm.ShortHash())
 					switch {
 					case cm.PRNumber != 0 && cm.Hash == commit.Hash:
 						cmRef = fmt.Sprintf("#%v (👉[%v](%v))", cm.PRNumber, cm.ShortHash(), cmURL)
@@ -240,12 +238,12 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 				}))
 				isDraft := regexpDraft.MatchString(commit.Title)
 				if isDraft {
-					must(execGh("pr", "ready", strconv.Itoa(commit.PRNumber), "--undo"))
+					must(gh("pr", "ready", strconv.Itoa(commit.PRNumber), "--undo"))
 				} else {
-					must(execGh("pr", "ready", strconv.Itoa(commit.PRNumber)))
+					must(gh("pr", "ready", strconv.Itoa(commit.PRNumber)))
 				}
-				if tags := commit.GetTags(config.Tags...); len(tags) > 0 {
-					must(execGh("pr", "edit", strconv.Itoa(commit.PRNumber), "--add-label", strings.Join(tags, ",")))
+				if tags := commit.GetTags(config.tags...); len(tags) > 0 {
+					must(gh("pr", "edit", strconv.Itoa(commit.PRNumber), "--add-label", strings.Join(tags, ",")))
 				}
 			}()
 		}
@@ -266,12 +264,12 @@ func findCommitWithoutRemoteRef(commits []*Commit) *Commit {
 }
 
 func validateGitStatusClean() bool {
-	output := must(execGit("status"))
+	output := must(git("status"))
 	return strings.Contains(output, "nothing to commit, working tree clean")
 }
 
 func isMyOwnCommit(commit *Commit) bool {
-	return commit.AuthorEmail == config.Email
+	return commit.AuthorEmail == config.git.email
 }
 
 func splitEmail(email string) (string, string) {

@@ -50,14 +50,14 @@ type ConfigGit struct {
 	user    string // git
 	email   string // git
 
-	localTrunk  string // main | trunk branch
+	localTrunk  string // main | trunk branch (optional)
 	remoteTrunk string // main | trunk branch
 
-	remote     string // origin
-	remotePath string // git@github.com:org/repo.git | https://github.com/org/repo.git
-	protocol   string // ssh | https
-	host       string // github.com
-	repo       string // org/repo
+	remote    string // origin
+	remoteUrl string // git@github.com:org/repo.git | https://github.com/org/repo.git
+	protocol  string // ssh | https
+	host      string // github.com
+	repo      string // org/repo
 }
 
 type ConfigGh struct {
@@ -79,8 +79,6 @@ type ConfigJj struct {
 
 func LoadConfig() (config Config) {
 	flag.BoolVar(&config.verbose, "v", false, "Verbose output")
-	flag.StringVar(&config.git.remote, "remote", "origin", "Remote name")
-	flag.StringVar(&config.git.localTrunk, "main", "main", "Main branch name")
 	flag.BoolVar(&config.includeOtherAuthors, "include-other-authors", false, "Create PRs for commits from other authors (default to false: skip)")
 
 	flagGitHubHosts := flag.String("gh-hosts", "~/.config/gh/hosts.yml", "Path to config.json")
@@ -88,108 +86,162 @@ func LoadConfig() (config Config) {
 	flagSetTags := flag.String("default-tags", "", "Set default tags for the current repository (comma separated)")
 	flagTags := flag.String("t", "", "Set tags for current stack, ignore default (comma separated)")
 
-	// parse flags
-	usage := "Usage: git pr [options]"
-	flag.Usage = func() {
-		fmt.Println(usage)
-		flag.PrintDefaults()
-	}
-	flag.Parse()
+	{ // parse flags
+		usage := "Usage: git pr [OPTIONS]"
+		flag.Usage = func() {
+			fmt.Println(usage)
+			flag.PrintDefaults()
+		}
+		flag.Parse()
 
-	// configs from flags
-	config.timeout = time.Duration(*flagTimeout) * time.Second
-	if *flagSetTags != "" {
-		tags := saveGitPRConfig(strings.Split(*flagSetTags, ","))
-		fmt.Printf("Set default tags: %v\n", strings.Join(tags, ", "))
-		os.Exit(0)
-	}
-	config.tags = getGitPRConfig()
-	if *flagTags != "" {
-		config.tags = nil // override default tags
-		tags := strings.Split(*flagTags, ",")
-		for _, tag := range tags {
-			tag = strings.TrimSpace(tag)
-			if tag != "" {
-				config.tags = append(config.tags, tag)
+		// configs from flags
+		config.timeout = time.Duration(*flagTimeout) * time.Second
+		if *flagSetTags != "" {
+			tags := saveGitPRConfig(strings.Split(*flagSetTags, ","))
+			fmt.Printf("Set default tags: %v\n", strings.Join(tags, ", "))
+			os.Exit(0)
+		}
+		config.tags = getGitPRConfig()
+		if *flagTags != "" {
+			config.tags = nil // override default tags
+			tags := strings.Split(*flagTags, ",")
+			for _, tag := range tags {
+				tag = strings.TrimSpace(tag)
+				if tag != "" {
+					config.tags = append(config.tags, tag)
+				}
 			}
 		}
 	}
-
-	// detect repository
-	out, err := _execCmd("git", "remote", "-v")
-	if err != nil {
-		exitf(`
+	{ // detect repository by git
+		errMsg := `
 git-pr is a tool for submitting git commits as GitHub stacked pull requests (stacked PRs).
 
 ERROR: You need to run it in a git repository with remote configured.
 
-For more information, see "git-pr --help".`)
-	}
+For more information, see "git-pr --help".`
 
-	regexpURL := regexp.MustCompile(`git@([^:\s]+):([^/\s]+)/([^.\s]+)(\.git)?`)
-	matches := regexpURL.FindStringSubmatch(out)
-	if matches == nil {
-		// match https url
-		regexpURL = regexp.MustCompile(`https://(github\.com)/([^/\s]+)\/([^.\s]+)(\.git)?`)
-		matches = regexpURL.FindStringSubmatch(out)
-		if matches == nil {
-			exitf("failed to parse remote url: expect git@<host>:<user>/<repo> or https://github.com/<user>/<repo> (got %q)", out)
+		output, err := _git("rev-parse", "--show-toplevel")
+		if err != nil {
+			exitf(errMsg)
 		}
-	}
-	config.git.host = matches[1]
-	config.git.repo = matches[2] + "/" + matches[3]
-	config.repoDir = must(findRepoDir())
+		config.git.enabled = true
+		config.repoDir = strings.TrimSpace(output)
 
-	// parse github config
-	ghHosts, err := LoadGitHubConfig(*flagGitHubHosts)
-	if err != nil {
-		exitf("failed to load GitHub config at %v: %v\n", *flagGitHubHosts, err)
-		fmt.Printf(`
+		// find remote url (push)
+		// TODO: support multiple remotes
+		out, err := git("remote", "-v")
+		if err != nil {
+			exitf(errMsg)
+		}
+		func() {
+			line := out // find the line with "(push)"
+			for _, l := range strings.Split(out, "\n") {
+				if strings.Contains(l, "(push)") {
+					line = l
+					break
+				}
+			}
+
+			// git@<host>:<user>/<repo>.git
+			regexpURL := regexp.MustCompile(`(\w+)\s+(git@([^:\s]+):([^/\s]+)/([^.\s]+)(\.git)?)`)
+			matches := regexpURL.FindStringSubmatch(line)
+			if len(matches) > 0 {
+				config.git.protocol = "ssh"
+				config.git.remote = matches[1]
+				config.git.remoteUrl = matches[2]
+				config.git.host = matches[3]
+				config.git.repo = matches[4] + "/" + matches[5]
+				return
+			}
+
+			// https://<host>/<user>/<repo>.git
+			regexpURL = regexp.MustCompile(`(\w+)\s+(https://(github\.com)/([^/\s]+)\/([^.\s]+)(\.git)?)`)
+			matches = regexpURL.FindStringSubmatch(line)
+			if len(matches) > 0 {
+				config.git.protocol = "ssh"
+				config.git.remote = matches[1]
+				config.git.remoteUrl = matches[2]
+				config.git.host = matches[3]
+				config.git.repo = matches[4] + "/" + matches[5]
+				return
+			}
+
+			exitf(`
+ERROR: failed to parse remote url:
+  expect git@<host>:<user>/<repo> or https://github.com/<user>/<repo> 
+  got %q`, out)
+		}()
+	}
+	{ // detect remote trunk branch
+		out, err := git("symbolic-ref", "--short", fmt.Sprintf("refs/remotes/%v/HEAD", config.git.remote))
+		if err != nil {
+			exitf("ERROR: failed to detect remote trunk branch")
+		}
+		remoteTrunk := strings.TrimPrefix(out, config.git.remote+"/")
+		if remoteTrunk == "" {
+			exitf("ERROR: failed to detect remote trunk branch")
+		}
+		config.git.remoteTrunk = remoteTrunk
+		config.git.localTrunk = config.git.remoteTrunk
+	}
+	{ // get git username and email
+		user, err := getGitConfig("user.name")
+		if err != nil || user == "" {
+			exitf("ERROR: user.name not found in git config")
+		}
+		email, err := getGitConfig("user.email")
+		if err != nil || email == "" {
+			exitf("ERROR: user.email not found in git config")
+		}
+		config.git.user = user
+		config.git.email = email
+	}
+	{ // parse github config
+		ghHosts, err := LoadGitHubConfig(*flagGitHubHosts)
+		if err != nil {
+			exitf(`
+ERROR: failed to load GitHub config at %v: %v
+		
 Hint: Install github client and login with your account
       https://github.com/cli/cli#installation
 Then:
       gh auth login
-`)
-	}
-	ghHost := ghHosts[config.git.host]
-	if ghHost == nil {
-		fmt.Printf("no GitHub config for host %v\n", config.git.host)
-		fmt.Print(`
+`, *flagGitHubHosts, err)
+		}
+
+		ghHost := ghHosts[config.git.host]
+		if ghHost == nil {
+			exitf(`
+ERROR: no GitHub config for host %v
+
 Hint: Check your ~/.config/gh/hosts.yml
 Run the following command and choose your github host:
 
       gh auth login
-`)
-		os.Exit(1)
-	}
-	config.gh.user = ghHost.User
-	config.gh.token = ghHost.OauthToken
-	email, err := getGitConfig("user.email")
-	if err != nil {
-		fmt.Println("user.email not found in git config")
-		os.Exit(1)
-	}
-	if email == "" {
-		fmt.Println("user.email found in git config, but it's empty")
-		os.Exit(1)
-	}
-	config.git.email = email
-	if config.gh.token == "" { // try getting from keyring
-		key := "gh:" + config.git.host
-		config.gh.token, _ = keyring.Get(key, "")
-	}
-	if config.gh.token == "" {
-		fmt.Printf("no GitHub token found for host %v\n", config.git.host)
-		fmt.Print(`
+`, config.git.host)
+			return
+		}
+
+		config.gh.user = ghHost.User
+		config.gh.token = ghHost.OauthToken
+
+		if config.gh.token == "" { // try getting from keyring
+			key := "gh:" + config.git.host
+			config.gh.token, _ = keyring.Get(key, "")
+		}
+		if config.gh.token == "" {
+			exitf(`ERROR: no GitHub token found for host %q
+
 Hint: use github cli to login to your account:
 
       gh auth login
-`)
-		os.Exit(1)
+`, config.git.host)
+		}
 	}
 
-	validateConfig("user", config.gh.user)
-	validateConfig("email", config.git.email)
+	config.gh.host = config.git.host // assume github.com
+	config.gh.repo = config.git.repo // assume org/repo
 	return config
 }
 

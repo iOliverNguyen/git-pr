@@ -18,7 +18,7 @@ var (
 func gitLogs(size int, extra ...string) (string, error) {
 	args := []string{"log", fmt.Sprintf("-%v", size)}
 	args = append(args, extra...)
-	return execGit(args...)
+	return git(args...)
 }
 
 func parseLogs(logs string) (out CommitList, _ error) {
@@ -142,12 +142,12 @@ func getStackedCommits(base, target string) ([]*Commit, error) {
 }
 
 func deleteBranch(branch string) error {
-	branches, err := execGit("branch")
+	branches, err := git("branch")
 	if err != nil {
 		return err
 	}
 	if strings.Contains(branches, branch+"\n") {
-		_, err = execGit("branch", "-D", branch) // delete branch
+		_, err = git("branch", "-D", branch) // delete branch
 	}
 	return err
 }

@@ -31,29 +31,57 @@ const prDelimiterToGenerated = "[//]: # (BEGIN GIT-PR FOOTER)"
 var prDelimiterRegexp = regexp.MustCompile(`\[//]:[^\n]+\bGIT-PR\b`)
 
 type Config struct {
-	Repo       string // git
-	RepoDir    string // git
-	Remote     string // flag
-	MainBranch string // flag
+	repoDir string // git
 
-	Host  string // git
-	User  string // gh-cli
-	Token string // gh-cli
-	Email string // git config user.email
+	git ConfigGit
+	gh  ConfigGh
+	bl  ConfigBranchless
+	jj  ConfigJj
 
-	Tags []string // git config git-pr.<repo>.tags
+	tags    []string      // git config git-pr.<repo>.tags
+	verbose bool          // flag
+	timeout time.Duration // flag
 
-	IncludeOtherAuthors bool // flag
+	includeOtherAuthors bool // flag
+}
 
-	Verbose bool          // flag
-	Timeout time.Duration // flag
+type ConfigGit struct {
+	enabled bool
+	user    string // git
+	email   string // git
+
+	localTrunk  string // main | trunk branch
+	remoteTrunk string // main | trunk branch
+
+	remote     string // origin
+	remotePath string // git@github.com:org/repo.git | https://github.com/org/repo.git
+	protocol   string // ssh | https
+	host       string // github.com
+	repo       string // org/repo
+}
+
+type ConfigGh struct {
+	user  string // gh-cli
+	token string // gh-cli
+	host  string // github.com
+	repo  string // org/repo
+}
+
+type ConfigBranchless struct {
+	enabled bool
+	version string
+}
+
+type ConfigJj struct {
+	enabled bool
+	version string
 }
 
 func LoadConfig() (config Config) {
-	flag.BoolVar(&config.Verbose, "v", false, "Verbose output")
-	flag.StringVar(&config.Remote, "remote", "origin", "Remote name")
-	flag.StringVar(&config.MainBranch, "main", "main", "Main branch name")
-	flag.BoolVar(&config.IncludeOtherAuthors, "include-other-authors", false, "Create PRs for commits from other authors (default to false: skip)")
+	flag.BoolVar(&config.verbose, "v", false, "Verbose output")
+	flag.StringVar(&config.git.remote, "remote", "origin", "Remote name")
+	flag.StringVar(&config.git.localTrunk, "main", "main", "Main branch name")
+	flag.BoolVar(&config.includeOtherAuthors, "include-other-authors", false, "Create PRs for commits from other authors (default to false: skip)")
 
 	flagGitHubHosts := flag.String("gh-hosts", "~/.config/gh/hosts.yml", "Path to config.json")
 	flagTimeout := flag.Int("timeout", 20, "API call timeout in seconds")
@@ -69,26 +97,26 @@ func LoadConfig() (config Config) {
 	flag.Parse()
 
 	// configs from flags
-	config.Timeout = time.Duration(*flagTimeout) * time.Second
+	config.timeout = time.Duration(*flagTimeout) * time.Second
 	if *flagSetTags != "" {
 		tags := saveGitPRConfig(strings.Split(*flagSetTags, ","))
 		fmt.Printf("Set default tags: %v\n", strings.Join(tags, ", "))
 		os.Exit(0)
 	}
-	config.Tags = getGitPRConfig()
+	config.tags = getGitPRConfig()
 	if *flagTags != "" {
-		config.Tags = nil // override default tags
+		config.tags = nil // override default tags
 		tags := strings.Split(*flagTags, ",")
 		for _, tag := range tags {
 			tag = strings.TrimSpace(tag)
 			if tag != "" {
-				config.Tags = append(config.Tags, tag)
+				config.tags = append(config.tags, tag)
 			}
 		}
 	}
 
 	// detect repository
-	out, err := execCmd("git", "remote", "-v")
+	out, err := _execCmd("git", "remote", "-v")
 	if err != nil {
 		exitf(`
 git-pr is a tool for submitting git commits as GitHub stacked pull requests (stacked PRs).
@@ -108,9 +136,9 @@ For more information, see "git-pr --help".`)
 			exitf("failed to parse remote url: expect git@<host>:<user>/<repo> or https://github.com/<user>/<repo> (got %q)", out)
 		}
 	}
-	config.Host = matches[1]
-	config.Repo = matches[2] + "/" + matches[3]
-	config.RepoDir = must(findRepoRoot())
+	config.git.host = matches[1]
+	config.git.repo = matches[2] + "/" + matches[3]
+	config.repoDir = must(findRepoDir())
 
 	// parse github config
 	ghHosts, err := LoadGitHubConfig(*flagGitHubHosts)
@@ -123,9 +151,9 @@ Then:
       gh auth login
 `)
 	}
-	ghHost := ghHosts[config.Host]
+	ghHost := ghHosts[config.git.host]
 	if ghHost == nil {
-		fmt.Printf("no GitHub config for host %v\n", config.Host)
+		fmt.Printf("no GitHub config for host %v\n", config.git.host)
 		fmt.Print(`
 Hint: Check your ~/.config/gh/hosts.yml
 Run the following command and choose your github host:
@@ -134,8 +162,8 @@ Run the following command and choose your github host:
 `)
 		os.Exit(1)
 	}
-	config.User = ghHost.User
-	config.Token = ghHost.OauthToken
+	config.gh.user = ghHost.User
+	config.gh.token = ghHost.OauthToken
 	email, err := getGitConfig("user.email")
 	if err != nil {
 		fmt.Println("user.email not found in git config")
@@ -145,13 +173,13 @@ Run the following command and choose your github host:
 		fmt.Println("user.email found in git config, but it's empty")
 		os.Exit(1)
 	}
-	config.Email = email
-	if config.Token == "" { // try getting from keyring
-		key := "gh:" + config.Host
-		config.Token, _ = keyring.Get(key, "")
+	config.git.email = email
+	if config.gh.token == "" { // try getting from keyring
+		key := "gh:" + config.git.host
+		config.gh.token, _ = keyring.Get(key, "")
 	}
-	if config.Token == "" {
-		fmt.Printf("no GitHub token found for host %v\n", config.Host)
+	if config.gh.token == "" {
+		fmt.Printf("no GitHub token found for host %v\n", config.git.host)
 		fmt.Print(`
 Hint: use github cli to login to your account:
 
@@ -160,8 +188,8 @@ Hint: use github cli to login to your account:
 		os.Exit(1)
 	}
 
-	validateConfig("user", config.User)
-	validateConfig("email", config.Email)
+	validateConfig("user", config.gh.user)
+	validateConfig("email", config.git.email)
 	return config
 }
 
@@ -188,7 +216,7 @@ func LoadGitHubConfig(configPath string) (out GitHubConfigHostsFile, _ error) {
 }
 
 func getGitConfig(name string) (string, error) {
-	out, err := execGit("config", "--get", name)
+	out, err := git("config", "--get", name)
 	if err != nil {
 		return "", err
 	}
@@ -213,7 +241,7 @@ func validateConfig[T comparable](name string, value T) {
 }
 
 func getGitPRConfig() (tags []string) {
-	rawTags, _ := execGit("config", "--get", gitconfigTags)
+	rawTags, _ := git("config", "--get", gitconfigTags)
 	for _, tag := range strings.Split(rawTags, ",") {
 		tag = strings.TrimSpace(tag)
 		if tag != "" {
@@ -233,7 +261,7 @@ func saveGitPRConfig(tags []string) []string {
 	}
 	rawTags := strings.Join(xtags, ",")
 
-	_, _ = execGit("config", "--unset-all", gitconfigTags)
-	must(execGit("config", "--add", gitconfigTags, rawTags))
+	_, _ = git("config", "--unset-all", gitconfigTags)
+	must(git("config", "--add", gitconfigTags, rawTags))
 	return xtags
 }

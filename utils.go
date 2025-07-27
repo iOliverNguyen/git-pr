@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 )
@@ -25,7 +24,7 @@ func fprintf(w io.Writer, format string, args ...any) {
 }
 
 func errorf(msg string, args ...any) error {
-	return errors.New(fmt.Sprintf(msg, args...))
+	return fmt.Errorf(msg, args)
 }
 
 func wrapf(err error, msg string, args ...any) error {
@@ -36,7 +35,7 @@ func wrapf(err error, msg string, args ...any) error {
 }
 
 func debugf(msg string, args ...any) {
-	if config.Verbose {
+	if config.verbose {
 		fmt.Printf("[DEBUG] "+msg, args...)
 	}
 }
@@ -102,8 +101,8 @@ func maxAttrsLength(attrs []KeyVal) int {
 	return maxL
 }
 
-func findRepoRoot() (string, error) {
-	output, err := execCmd("git", "rev-parse", "--show-toplevel")
+func findRepoDir() (string, error) {
+	output, err := _execCmd("git", "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", errors.New(output)
 	}
@@ -114,32 +113,4 @@ var rePrefixNewline = regexp.MustCompile(`^\n *`)
 
 func trimPrefixNewline(s string) string {
 	return rePrefixNewline.ReplaceAllString(s, "")
-}
-
-func execGit(args ...string) (string, error) { return execCommand("git", args...) }
-func execGh(args ...string) (string, error)  { return execCommand("gh", args...) }
-func execJj(args ...string) (string, error)  { return execCommand("jj", args...) }
-
-func execCommand(name string, args ...string) (string, error) {
-	output, err := execCmd(name, args...)
-	if err != nil {
-		fmt.Println(output)
-	}
-	return output, err
-}
-
-func execCmd(name string, args ...string) (string, error) {
-	if config.Verbose {
-		fmt.Print(name, " ")
-		for _, arg := range args {
-			if strings.Contains(arg, " ") {
-				fmt.Printf("%q", arg)
-			} else {
-				fmt.Print(arg, " ")
-			}
-		}
-		fmt.Println()
-	}
-	output, err := exec.Command(name, args...).CombinedOutput()
-	return string(output), err
 }

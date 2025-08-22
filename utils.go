@@ -23,7 +23,7 @@ func fprintf(w io.Writer, format string, args ...any) {
 }
 
 func errorf(msg string, args ...any) error {
-	return fmt.Errorf(msg, args)
+	return fmt.Errorf(msg, args...)
 }
 
 func wrapf(err error, msg string, args ...any) error {

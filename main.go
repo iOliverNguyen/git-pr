@@ -64,7 +64,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 	// fill remote ref for each commit
 	for commitWithoutRemoteRef := range findCommitsWithoutRemoteRef(stackedCommits) {
-		remoteRef := fmt.Sprintf("%v/%v", config.git.user, commitWithoutRemoteRef.ShortHash())
+		remoteRef := fmt.Sprintf("%v/%v", config.gh.user, commitWithoutRemoteRef.ShortHash())
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
 		must(execGit("reword", commitWithoutRemoteRef.Hash, "-m", commitWithoutRemoteRef.FullMessage()))

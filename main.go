@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"iter"
 	"regexp"
 	"strconv"
 	"strings"
@@ -62,7 +63,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	}
 
 	// fill remote ref for each commit
-	for commitWithoutRemoteRef := findCommitWithoutRemoteRef(stackedCommits); commitWithoutRemoteRef != nil; commitWithoutRemoteRef = findCommitWithoutRemoteRef(stackedCommits) {
+	for commitWithoutRemoteRef := range findCommitsWithoutRemoteRef(stackedCommits) {
 		remoteRef := fmt.Sprintf("%v/%v", config.git.user, commitWithoutRemoteRef.ShortHash())
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
@@ -249,16 +250,17 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	}
 }
 
-func findCommitWithoutRemoteRef(commits []*Commit) *Commit {
-	for _, commit := range commits {
-		if commit.Skip {
-			continue
-		}
-		if commit.GetRemoteRef() == "" {
-			return commit
+func findCommitsWithoutRemoteRef(commits []*Commit) iter.Seq[*Commit] {
+	return func(yield func(*Commit) bool) {
+		for _, commit := range commits {
+			if commit.Skip {
+				continue
+			}
+			if commit.GetRemoteRef() == "" {
+				yield(commit)
+			}
 		}
 	}
-	return nil
 }
 
 func validateGitStatusClean() bool {

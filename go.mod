@@ -1,6 +1,6 @@
 module github.com/iOliverNguyen/git-pr
 
-go 1.20
+go 1.23
 
 require (
 	github.com/tidwall/gjson v1.14.4

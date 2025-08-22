@@ -86,8 +86,8 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 	// truncate empty lines
 	bodyEnd := 0
 	for i := len(lines) - 1; i >= 0; i-- {
-		if lines[i] == "" {
-			bodyEnd = i
+		if strings.TrimSpace(lines[i]) != "" {
+			bodyEnd = i + 1
 			break
 		}
 	}

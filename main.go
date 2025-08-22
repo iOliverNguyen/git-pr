@@ -23,10 +23,7 @@ const (
 const bodyTemplate = `
 # Summary
 
-<br>
-<br>
-<br>
-<br>
+<br><br><br><br>
 `
 
 var regexpDraft = regexp.MustCompile(`(?i)\[draft]`)

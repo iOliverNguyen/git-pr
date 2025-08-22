@@ -7,6 +7,8 @@ package main
 import (
 	"fmt"
 	"iter"
+	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -63,15 +65,18 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	}
 
 	// fill remote ref for each commit
+	commitsToUpdate := make(map[string]*Commit)
 	for commitWithoutRemoteRef := range findCommitsWithoutRemoteRef(stackedCommits) {
-		remoteRef := fmt.Sprintf("%v/%v", config.gh.user, commitWithoutRemoteRef.ShortHash())
+		suffix := commitWithoutRemoteRef.ShortHash()
+		remoteRef := fmt.Sprintf("%v/%v", config.gh.user, suffix)
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
-		must(git("checkout", commitWithoutRemoteRef.Hash))
-		must(git("commit", "--amend", "-m", commitWithoutRemoteRef.FullMessage()))
+		commitsToUpdate[commitWithoutRemoteRef.Hash] = commitWithoutRemoteRef
+	}
 
-		time.Sleep(500 * time.Millisecond)
-		stackedCommits = must(getStackedCommits(originMain, head))
+	// if there are commits to update, rewrite them using git plumbing
+	if len(commitsToUpdate) > 0 {
+		stackedCommits = gitRewriteCommits(originMain, stackedCommits, commitsToUpdate)
 	}
 
 	prevCommit := func(commit *Commit) (prev *Commit) {
@@ -261,6 +266,99 @@ func findCommitsWithoutRemoteRef(commits []*Commit) iter.Seq[*Commit] {
 			}
 		}
 	}
+}
+
+func gitRewriteCommits(originMain string, stackedCommits []*Commit, commitsToUpdate map[string]*Commit) []*Commit {
+	// helper function to recreate a commit with new parent and/or message
+	recreateCommit := func(commit *Commit, newParent string, newMessage string) string {
+		// get the tree object from the original commit
+		tree := must(git("rev-parse", commit.Hash+"^{tree}"))
+
+		// get author and committer info from original commit
+		authorInfo := must(git("log", "-1", "--format=%an <%ae>", commit.Hash))
+		authorDate := must(git("log", "-1", "--format=%aI", commit.Hash))
+		committerInfo := must(git("log", "-1", "--format=%cn <%ce>", commit.Hash))
+		committerDate := must(git("log", "-1", "--format=%cI", commit.Hash))
+
+		// if no new message provided, get the original
+		if newMessage == "" {
+			newMessage = must(git("log", "-1", "--format=%B", commit.Hash))
+		}
+
+		// create environment for preserving commit metadata
+		env := []string{
+			"GIT_AUTHOR_NAME=" + strings.Split(authorInfo, " <")[0],
+			"GIT_AUTHOR_EMAIL=" + strings.Trim(strings.Split(authorInfo, " <")[1], ">"),
+			"GIT_AUTHOR_DATE=" + authorDate,
+			"GIT_COMMITTER_NAME=" + strings.Split(committerInfo, " <")[0],
+			"GIT_COMMITTER_EMAIL=" + strings.Trim(strings.Split(committerInfo, " <")[1], ">"),
+			"GIT_COMMITTER_DATE=" + committerDate,
+		}
+
+		// create new commit object
+		cmd := exec.Command("git", "commit-tree", tree, "-p", newParent)
+		cmd.Stdin = strings.NewReader(newMessage)
+		cmd.Env = append(os.Environ(), env...)
+		output, err := cmd.Output()
+		if err != nil {
+			panic(fmt.Sprintf("failed to recreate commit %s: %v", commit.Hash[:8], err))
+		}
+		return strings.TrimSpace(string(output))
+	}
+
+	// create a mapping of old commit -> new commit
+	replacements := make(map[string]string)
+
+	// process commits from oldest to newest
+	for i, commit := range stackedCommits {
+		// determine the parent for this commit
+		var parent string
+		if i == 0 {
+			// first commit - use original parent
+			parent = must(git("rev-parse", commit.Hash+"^"))
+		} else {
+			// use previous commit (possibly rewritten)
+			prevCommit := stackedCommits[i-1]
+			if newHash, replaced := replacements[prevCommit.Hash]; replaced {
+				parent = newHash
+			} else {
+				parent = prevCommit.Hash
+			}
+		}
+
+		// check if this commit needs updating
+		commitToUpdate, needsRemoteRef := commitsToUpdate[commit.Hash]
+		parentChanged := i > 0 && replacements[stackedCommits[i-1].Hash] != ""
+
+		if needsRemoteRef || parentChanged {
+			// determine the message to use
+			var message string
+			if needsRemoteRef {
+				message = commitToUpdate.FullMessage()
+			}
+			// recreate commit with new parent and/or message
+			newCommit := recreateCommit(commit, parent, message)
+			replacements[commit.Hash] = newCommit
+
+			if needsRemoteRef {
+				debugf("created new commit %s to replace %s (added Remote-Ref)", newCommit[:8], commit.Hash[:8])
+			} else {
+				debugf("recreated commit %s to replace %s (parent changed)", newCommit[:8], commit.Hash[:8])
+			}
+		}
+	}
+
+	// update the branch to point to the new HEAD
+	if len(replacements) > 0 {
+		lastCommit := stackedCommits[len(stackedCommits)-1]
+		if newHead, replaced := replacements[lastCommit.Hash]; replaced {
+			must(git("update-ref", "HEAD", newHead))
+			debugf("updated HEAD to %s", newHead[:8])
+		}
+	}
+
+	// reload the commits after rewriting
+	return must(getStackedCommits(originMain, head))
 }
 
 func validateGitStatusClean() bool {

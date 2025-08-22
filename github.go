@@ -55,7 +55,7 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 		return githubSearchPRNumberForCommit(commit)
 	}
 
-	// The commit was pushed and got "Everything up-to-date", try creating new pr
+	// the commit was pushed and got "Everything up-to-date", try creating new pr
 	err = githubCreatePRForCommit(commit, prev)
 	if err != nil {
 		return 0, err

@@ -91,10 +91,11 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 			break
 		}
 	}
-	lines = lines[bodyStart:bodyEnd]
+	bodyLines := lines[bodyStart:bodyEnd]
 	// parse footer
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := lines[i]
+	footerStart := len(bodyLines)
+	for i := len(bodyLines) - 1; i >= 0; i-- {
+		line := bodyLines[i]
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -102,12 +103,12 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 			key, val := strings.ToLower(m[1]), strings.TrimSpace(m[2])
 			out.Attrs = append(out.Attrs, KeyVal{key, val})
 		} else {
-			bodyEnd = i + 1
+			footerStart = i + 1
 			break
 		}
 	}
 	// parse body
-	out.Title, out.Message = parseBody(lines[:bodyEnd])
+	out.Title, out.Message = parseBody(bodyLines[:footerStart])
 	// validate
 	if out.Hash == "" || out.AuthorName == "" || out.AuthorEmail == "" || out.Title == "" {
 		panicf(nil, "failed to parse commit with log:\n%v", strings.Join(backup, "\n"))

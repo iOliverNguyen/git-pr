@@ -35,6 +35,15 @@ const bodyTemplate = `
 var regexpDraft = regexp.MustCompile(`(?i)\[draft]`)
 
 func main() {
+	// check if running land subcommand before parsing flags
+	if len(os.Args) > 1 && os.Args[1] == "land" {
+		// remove "land" from args so flag parsing works correctly
+		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		config = LoadConfig()
+		runLandCommand()
+		return
+	}
+	
 	config = LoadConfig()
 
 	// ensure no uncommitted changes
@@ -471,4 +480,22 @@ func coalesce(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// runLandCommand handles the "land" subcommand for merging stacked PRs
+func runLandCommand() {
+	// parse land-specific flags
+	cfg := landConfig{
+		timeout:       30 * time.Second,
+		pollInterval:  10 * time.Second,
+		deleteBranch:  true, // github will handle branch deletion properly
+		requireChecks: false, // set to false for testing
+		autoMode:      false,
+		dryRun:        config.dryRun,
+	}
+
+	// run the land operation
+	if err := landStack(cfg); err != nil {
+		exitf("ERROR: %v", err)
+	}
 }

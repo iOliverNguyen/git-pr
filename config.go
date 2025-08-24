@@ -20,6 +20,8 @@ var (
 	emojis4 = []string{"🍏", "🍎", "🍐", "🍊", "🍋", "🍌", "🍉", "🍇", "🍓", "🍈", "🍒", "🍑", "🥭", "🍍", "🥥", "🥝", "🍅", "🍆", "🥑", "🥦", "🥬", "🥒", "🌶️", "🌽", "🥕", "🧄", "🧅", "🥔", "🍠", "🥐", "🥯", "🍞", "🥖", "🥨", "🧀", "🥚", "🍳", "🧈", "🥞", "🧇", "🥓", "🥩", "🍗", "🍖", "🦴", "🌭", "🍔", "🍟", "🍕", "🥪", "🥙", "🧆", "🌮", "🌯", "🥗", "🥘", "🥫", "🍝", "🍜", "🍲", "🍛", "🍣", "🍱", "🥟", "🦪", "🍤", "🍙", "🍚", "🍘", "🍥", "🥮", "🥠", "🍢", "🍡", "🍧", "🍨", "🍦", "🥧", "🧁", "🍰", "🎂", "🍮", "🍭", "🍬", "🍫", "🍿", "🍩", "🍪", "🌰", "🥜", "🍯", "🥛", "🍼", "☕", "🍵", "🧃", "🥤", "🍶", "🍺", "🍻"}
 )
 
+const version = "1.1.2"
+
 var (
 	emojisx = emojis1 // config emojis
 	config  Config
@@ -80,6 +82,7 @@ type ConfigJj struct {
 }
 
 func LoadConfig() (config Config) {
+	flagVersion := flag.Bool("version", false, "Show version information")
 	flag.BoolVar(&config.verbose, "v", false, "Verbose output")
 	flag.BoolVar(&config.includeOtherAuthors, "include-other-authors", false, "Create PRs for commits from other authors (default to false: skip)")
 	flag.BoolVar(&config.dryRun, "dry-run", false, "Show what would be done without making changes")
@@ -97,6 +100,12 @@ func LoadConfig() (config Config) {
 			flag.PrintDefaults()
 		}
 		flag.Parse()
+
+		// handle version flag
+		if *flagVersion {
+			fmt.Printf("git-pr version %s\n", version)
+			os.Exit(0)
+		}
 
 		// check environment variables as fallback
 		if !config.dryRun && os.Getenv("GIT_PR_DRY_RUN") == "1" {

@@ -23,6 +23,10 @@ const (
 const bodyTemplate = `
 # Summary
 
+
+
+
+
 <br><br><br><br>
 `
 
@@ -224,70 +228,14 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 				pr := must(githubGetPRByNumber(commit.PRNumber))
 				pullURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%v", config.git.host, config.git.repo, commit.PRNumber)
 
-				parsedBody := func() string {
-					footerIndex := prDelimiterRegexp.FindStringIndex(pr.Body)
-					if len(footerIndex) > 0 {
-						startIdx := footerIndex[0]
-						return strings.TrimSpace(pr.Body[:startIdx])
-					}
-					return pr.Body
-				}()
-
-				// generate the PR's body:
-				// - if the user edited the body on github, keep the body (+ commit message)
-				// - if the user didn't edit the body, but set the commit message, keep the commit message
-				// - if the user didn't edit the body and didn't set the commit message, use the default template
-				var bodyB strings.Builder
-				prf := func(msg string, args ...any) { fprintf(&bodyB, msg, args...) }
-				prLine := func() { prf("---\n\n") }
-				prDelim := func() { prf("%v\n\n", prDelimiterToGenerated) }
-				prMessage := func() { prf("%v\n\n", commit.Message) }
-				if parsedBody != "" {
-					prf("%v\n\n\n\n\n\n\n\n", parsedBody)
-					prDelim()
-					prLine()
-					prMessage()
-				} else if commit.Message == "" {
-
-					prf("%v\n\n\n\n\n\n\n\n", bodyTemplate) // TODO: config template
-					prDelim()
-					prLine()
-					prMessage()
-				} else {
-					prDelim()
-					prMessage()
-					prLine()
-				}
-
-				// generate list of PRs:
-				// - for the current PR with an emoji, mark with an emoji and point to the commit
-				// - for other PRs, if it's from the author, use the PR number
-				// - otherwise, use the commit title and hash
-				for _, cm := range stackedCommits {
-					var cmRef string
-					cmURL := fmt.Sprintf("https://%v/%v/commit/%v", config.git.host, config.git.repo, cm.ShortHash())
-					switch {
-					case cm.PRNumber != 0 && cm.Hash == commit.Hash:
-						cmRef = fmt.Sprintf("#%v (👉[%v](%v))", cm.PRNumber, cm.ShortHash(), cmURL)
-					case cm.PRNumber != 0:
-						cmRef = fmt.Sprintf("#%v", cm.PRNumber)
-					default:
-						first, last := splitEmail(cm.AuthorEmail)
-						formattedEmail := first + "&#x200B;" + last // zero-width space to prevent creating email link
-						cmRef = fmt.Sprintf(`&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>[%v (%v)](%v)</b>&nbsp;&nbsp; ${\textsf{\color{lightblue}· %v}}$`, cm.Title, cm.ShortHash(), cmURL, formattedEmail)
-					}
-					if cm.Hash == commit.Hash {
-						prf("* " + emojisx[commit.PRNumber%len(emojisx)])
-					} else {
-						prf("* ◻️")
-					}
-					prf(" %v\n", cmRef)
-				}
+				// generate the PR body with stack info
+				stackInfo := generateStackInfo(stackedCommits, commit)
+				body := generatePRBody(commit, pr.Body, stackInfo)
 
 				// update the PR
 				must(httpRequest("PATCH", pullURL, map[string]any{
 					"title": commit.Title,
-					"body":  bodyB.String(),
+					"body":  body,
 				}))
 				isDraft := regexpDraft.MatchString(commit.Title)
 				if isDraft {
@@ -315,6 +263,72 @@ func findCommitsWithoutRemoteRef(commits []*Commit) iter.Seq[*Commit] {
 			}
 		}
 	}
+}
+
+// generateStackInfo generates the stack info section showing all PRs in the stack
+func generateStackInfo(stackedCommits []*Commit, currentCommit *Commit) string {
+	var stackB strings.Builder
+	sprf := func(msg string, args ...any) { fprintf(&stackB, msg, args...) }
+
+	for _, cm := range stackedCommits {
+		var cmRef string
+		cmURL := fmt.Sprintf("https://%v/%v/commit/%v", config.git.host, config.git.repo, cm.ShortHash())
+		switch {
+		case cm.PRNumber != 0 && cm.Hash == currentCommit.Hash:
+			cmRef = fmt.Sprintf("#%v (👉[%v](%v))", cm.PRNumber, cm.ShortHash(), cmURL)
+		case cm.PRNumber != 0:
+			cmRef = fmt.Sprintf("#%v", cm.PRNumber)
+		default:
+			first, last := splitEmail(cm.AuthorEmail)
+			formattedEmail := first + "&#x200B;" + last // zero-width space to prevent creating email link
+			cmRef = fmt.Sprintf(`&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>[%v (%v)](%v)</b>&nbsp;&nbsp; ${\textsf{\color{lightblue}· %v}}$`, cm.Title, cm.ShortHash(), cmURL, formattedEmail)
+		}
+		if cm.Hash == currentCommit.Hash {
+			sprf("* " + emojisx[currentCommit.PRNumber%len(emojisx)])
+		} else {
+			sprf("* ◻️")
+		}
+		sprf(" %v\n", cmRef)
+	}
+
+	return stackB.String()
+}
+
+// generatePRBody generates the PR body based on commit message and existing PR body
+// If commit has a message, it overrides the entire PR body
+// If commit has no message (GitHub UI user), it preserves existing content and only updates stack info
+func generatePRBody(commit *Commit, existingBody string, stackInfo string) string {
+	// normalize line endings from GitHub (may have \r\n)
+	existingBody = strings.ReplaceAll(existingBody, "\r\n", "\n")
+
+	if commit.Message != "" {
+		// user manages via git commits - override entire PR body
+		return fmt.Sprintf("%s\n\n---\n%s", commit.Message, stackInfo)
+	}
+
+	// user manages via GitHub UI - preserve their edits, only update stack info
+	parts := strings.Split(existingBody, "\n---\n")
+
+	if len(parts) > 1 {
+		lastSection := parts[len(parts)-1]
+		// check if last section is stack info (has bullets with PR numbers)
+		stackInfoPattern := regexp.MustCompile(`(?m)^\* .* #\d+`)
+		if stackInfoPattern.MatchString(lastSection) {
+			// replace the stack info section
+			parts[len(parts)-1] = stackInfo
+			return strings.Join(parts, "\n---\n")
+		}
+		// no stack info found in last section, append it
+		return existingBody + "\n\n---\n" + stackInfo
+	}
+
+	// no separator found
+	if existingBody == "" || existingBody == bodyTemplate {
+		// empty or template only, use template
+		return bodyTemplate + "\n---\n" + stackInfo
+	}
+	// has content but no separator, append stack info
+	return existingBody + "\n\n---\n" + stackInfo
 }
 
 func validateGitStatusClean() bool {

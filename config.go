@@ -28,9 +28,6 @@ var (
 )
 
 const gitconfigTags = "git-pr.tags"
-const prDelimiterToGenerated = "[//]: # (BEGIN GIT-PR FOOTER)"
-
-var prDelimiterRegexp = regexp.MustCompile(`\[//]:[^\n]+\bGIT-PR\b`)
 
 type Config struct {
 	repoDir string // git

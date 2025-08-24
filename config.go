@@ -42,7 +42,9 @@ type Config struct {
 	verbose bool          // flag
 	timeout time.Duration // flag
 
-	includeOtherAuthors bool // flag
+	includeOtherAuthors bool   // flag
+	dryRun              bool   // flag: show what would be done without making changes
+	stopAfter           string // flag: stop after specific phase
 }
 
 type ConfigGit struct {
@@ -80,6 +82,8 @@ type ConfigJj struct {
 func LoadConfig() (config Config) {
 	flag.BoolVar(&config.verbose, "v", false, "Verbose output")
 	flag.BoolVar(&config.includeOtherAuthors, "include-other-authors", false, "Create PRs for commits from other authors (default to false: skip)")
+	flag.BoolVar(&config.dryRun, "dry-run", false, "Show what would be done without making changes")
+	flag.StringVar(&config.stopAfter, "stop-after", "", "Stop after phase: validate|get-commits|rewrite|push|pr-create")
 
 	flagGitHubHosts := flag.String("gh-hosts", "~/.config/gh/hosts.yml", "Path to config.json")
 	flagTimeout := flag.Int("timeout", 20, "API call timeout in seconds")
@@ -93,6 +97,14 @@ func LoadConfig() (config Config) {
 			flag.PrintDefaults()
 		}
 		flag.Parse()
+
+		// check environment variables as fallback
+		if !config.dryRun && os.Getenv("GIT_PR_DRY_RUN") == "1" {
+			config.dryRun = true
+		}
+		if config.stopAfter == "" && os.Getenv("GIT_PR_STOP_AFTER") != "" {
+			config.stopAfter = os.Getenv("GIT_PR_STOP_AFTER")
+		}
 
 		// configs from flags
 		config.timeout = time.Duration(*flagTimeout) * time.Second

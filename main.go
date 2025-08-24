@@ -41,6 +41,12 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 `)
 	}
 
+	// checkpoint: validate
+	if config.stopAfter == "validate" {
+		fmt.Println("stopped after: validate")
+		return
+	}
+
 	originMain := fmt.Sprintf("%v/%v", config.git.remote, config.git.remoteTrunk)
 	stackedCommits := must(getStackedCommits(originMain, head))
 	if len(stackedCommits) == 0 {
@@ -50,6 +56,12 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		fmt.Println(commit)
 	}
 	fmt.Println()
+
+	// checkpoint: get-commits
+	if config.stopAfter == "get-commits" {
+		fmt.Println("stopped after: get-commits")
+		return
+	}
 
 	// validate no duplicated remote ref
 	mapRefs := map[string]*Commit{}
@@ -76,7 +88,20 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 	// if there are commits to update, rewrite them using git plumbing
 	if len(commitsToUpdate) > 0 {
-		stackedCommits = gitRewriteCommits(originMain, stackedCommits, commitsToUpdate)
+		if config.dryRun {
+			fmt.Println("[DRY-RUN] Would rewrite commits:")
+			for hash, commit := range commitsToUpdate {
+				fmt.Printf("  - %s: add Remote-Ref: %s\n", hash[:8], commit.GetAttr(KeyRemoteRef))
+			}
+		} else {
+			stackedCommits = gitRewriteCommits(originMain, stackedCommits, commitsToUpdate)
+		}
+	}
+
+	// checkpoint: rewrite
+	if config.stopAfter == "rewrite" {
+		fmt.Println("stopped after: rewrite")
+		return
 	}
 
 	prevCommit := func(commit *Commit) (prev *Commit) {
@@ -94,6 +119,10 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	pushCommit := func(commit *Commit) (logs string, execFunc func()) {
 		args := fmt.Sprintf("%v:refs/heads/%v", commit.ShortHash(), commit.GetAttr(KeyRemoteRef))
 		logs = fmt.Sprintf("push -f %v %v", config.git.remote, args)
+		if config.dryRun {
+			logs = "[DRY-RUN] " + logs
+			return logs, func() {} // no-op for dry-run
+		}
 		return logs, func() {
 			out := must(git("push", "-f", config.git.remote, args))
 			if strings.Contains(out, "remote: Create a pull request") {
@@ -104,6 +133,9 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		}
 	}
 	// push commits, concurrently
+	if config.dryRun {
+		fmt.Println("[DRY-RUN] Would push commits:")
+	}
 	{
 		var wg sync.WaitGroup
 		for _, commit := range stackedCommits {
@@ -119,22 +151,45 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			wg.Add(1)
 			logs, execFunc := pushCommit(commit)
 			fmt.Println(logs)
-			go func() {
-				defer wg.Done()
-				execFunc()
-			}()
+			if !config.dryRun {
+				go func() {
+					defer wg.Done()
+					execFunc()
+				}()
+			} else {
+				wg.Done()
+			}
 		}
 		wg.Wait()
 	}
 
+	// checkpoint: push
+	if config.stopAfter == "push" {
+		fmt.Println("stopped after: push")
+		return
+	}
+
 	// checkout the latest stacked commit
-	must(git("checkout", stackedCommits[len(stackedCommits)-1].Hash))
+	if !config.dryRun {
+		must(git("checkout", stackedCommits[len(stackedCommits)-1].Hash))
+	}
 
 	// wait for 5 seconds
-	fmt.Printf("waiting a bit...\n")
-	time.Sleep(5 * time.Second)
+	if !config.dryRun {
+		fmt.Printf("waiting a bit...\n")
+		time.Sleep(5 * time.Second)
+	}
 
 	// update commits with PR numbers, concurrently
+	if config.dryRun {
+		fmt.Println("[DRY-RUN] Would update PR descriptions for:")
+		for _, commit := range stackedCommits {
+			if !commit.Skip {
+				fmt.Printf("  - %s: %s\n", commit.ShortHash(), commit.Title)
+			}
+		}
+		return
+	}
 	{
 		var wg sync.WaitGroup
 		for i := len(stackedCommits) - 1; i >= 0; i-- {
@@ -156,6 +211,12 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			}
 		}
 		wg.Wait()
+	}
+
+	// checkpoint: pr-create  
+	if config.stopAfter == "pr-create" {
+		fmt.Println("stopped after: pr-create")
+		return
 	}
 
 	// update PRs with review link, concurrently

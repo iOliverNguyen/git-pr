@@ -91,7 +91,16 @@ func LoadConfig() (config Config) {
 	flagTags := flag.String("t", "", "Set tags for current stack, ignore default (comma separated)")
 
 	{ // parse flags
-		usage := "Usage: git pr [OPTIONS]"
+		usage := `Usage: git pr [OPTIONS]
+       git pr land [OPTIONS]
+
+Create and manage GitHub pull requests for stacked commits.
+
+Commands:
+  git pr        Create/update PRs for current stack
+  git pr land   Land (merge) all PRs in current stack
+
+Common options:`
 		flag.Usage = func() {
 			fmt.Println(usage)
 			flag.PrintDefaults()

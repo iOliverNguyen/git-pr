@@ -64,6 +64,8 @@ PRs](https://olivernguyen.io/w/stacked.prs).
 
 ## Usage
 
+### Creating PRs
+
 ```sh
 git checkout [commit]
 git pr
@@ -72,26 +74,52 @@ git pr
 Check out the last commit in your stacked commits and call `git pr` to push the stack to GitHub, one PR for each commit.
 Add `[draft]` to the commit title to mark it as draft.
 
+### Landing PRs
+
+```sh
+git pr land [--dry-run]
+```
+
+Land (merge) all PRs in the current stack sequentially. The command will:
+- Merge PRs one by one from bottom to top of the stack
+- Update base branches automatically to prevent PR closures
+- Wait for required CI checks if configured
+- Clean up PR descriptions (remove footer and empty templates)
+- Return to the main branch after landing
+
+Use `--dry-run` to preview what would be done without making changes.
+
 ### Arguments
 
 ```sh
 $ git-pr --help
-Usage: git pr [options]
+Usage: git pr [OPTIONS]
+       git pr land [OPTIONS]
+
+Common options:
+  --dry-run
+    	Show what would be done without making changes
+  --stop-after string
+    	Stop after phase: validate|get-commits|rewrite|push|pr-create
+  --version
+    	Show version information
+  -v	Verbose output
+
+PR creation options:
   -default-tags string
     	Set default tags for the current repository (comma separated)
   -gh-hosts string
     	Path to config.json (default "~/.config/gh/hosts.yml")
   -include-other-authors
     	Create PRs for commits from other authors (default to false: skip)
-  -main string
-    	Main branch name (default "main")
-  -remote string
-    	Remote name (default "origin")
   -t string
     	Set tags for current stack, ignore default (comma separated)
   -timeout int
     	API call timeout in seconds (default 20)
-  -v	Verbose output
+
+Land command:
+  git pr land         Land all PRs in the current stack
+  git pr land --dry-run  Preview what would be done
 ```
 
 ### Tags/Labels

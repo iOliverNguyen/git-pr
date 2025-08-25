@@ -84,7 +84,12 @@ Land (merge) all PRs in the current stack sequentially. The command will:
 - Merge PRs one by one from bottom to top of the stack
 - Update base branches automatically to prevent PR closures
 - Wait for required CI checks if configured
-- Clean up PR descriptions (remove footer and empty templates)
+- Detect CI-added commits automatically (by counting commits)
+- Clean up PR descriptions while preserving content:
+  - Removes stack info footer (after last `---` with PR references)
+  - Removes markdown comments (`[//]: #` and HTML `<!-- -->`)
+  - Preserves markdown headers with underlines (e.g., `Test` followed by `----`)
+  - Preserves all actual content including lists, code blocks, and formatting
 - Return to the main branch after landing
 
 Use `--dry-run` to preview what would be done without making changes.

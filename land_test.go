@@ -1,0 +1,438 @@
+package main
+
+import (
+	"testing"
+)
+
+func TestCleanupPRBodyForMerge(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "empty body",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "simple body without cleanup needed",
+			input:    "This is a simple PR description.",
+			expected: "This is a simple PR description.",
+		},
+		{
+			name: "body with stack footer",
+			input: `This is the main content.
+
+---
+* 🐹 #123 (👉abc123)
+* ◻️ #124`,
+			expected: "This is the main content.",
+		},
+		{
+			name: "body with HTML comments",
+			input: `Main content here.
+
+<!-- This is a comment -->
+
+More content.`,
+			expected: `Main content here.
+
+More content.`,
+		},
+		{
+			name: "body with multi-line HTML comments",
+			input: `Start of content.
+
+<!-- 
+Multi-line
+comment
+here
+-->
+
+End of content.`,
+			expected: `Start of content.
+
+End of content.`,
+		},
+		{
+			name: "body with triple dash HTML comments",
+			input: `Content before.
+
+<!--- Triple dash comment --->
+
+Content after.`,
+			expected: `Content before.
+
+Content after.`,
+		},
+		{
+			name: "body with markdown link comments",
+			input: `First paragraph.
+
+[//]: # (This is a hidden comment)
+
+Second paragraph.`,
+			expected: `First paragraph.
+
+Second paragraph.`,
+		},
+		{
+			name: "body with various markdown comment styles",
+			input: `Content start.
+
+[]: # (Comment with empty bracket)
+[//]: # (Comment with slashes)
+[comment]: # (Comment with word)
+[]: # "Comment with quotes"
+[]: # 'Comment with single quotes'
+
+Content end.`,
+			expected: `Content start.
+
+Content end.`,
+		},
+		{
+			name: "body with everything combined",
+			input: `# PR Description
+
+This is the main content.
+
+<!-- HTML comment to remove -->
+
+[//]: # (Markdown comment to remove)
+
+Some more text here.
+
+<!--- Another HTML comment --->
+
+[]: # (Another markdown comment)
+
+Final paragraph.
+
+---
+* #123 Stack info footer
+* #124 Should be removed`,
+			expected: `# PR Description
+
+This is the main content.
+
+Some more text here.
+
+Final paragraph.`,
+		},
+		{
+			name: "body with markdown headers and content",
+			input: `Summary
+---
+
+add x
+
+delete a
+
+---
+* 🐶 #70 (👉bded112a)
+* ◻️ #71
+* ◻️ #69`,
+			expected: `Summary
+---
+
+add x
+
+delete a`,
+		},
+		{
+			name: "body with multiple markdown sections",
+			input: `Summary
+---
+
+test
+
+[//]: # (delete m)
+
+Test
+----
+
+ok
+
+abc
+
+---
+* ◻️ #70
+* 🐷 #71 (👉4955b398)
+* ◻️ #69`,
+			expected: `Summary
+---
+
+test
+
+Test
+----
+
+ok
+
+abc`,
+		},
+		{
+			name: "empty template with Summary",
+			input: `# Summary
+
+
+
+<br><br><br>`,
+			expected: "",
+		},
+		{
+			name: "empty template variations",
+			input: `#    Summary   
+
+  
+
+<br/><br><br />`,
+			expected: "",
+		},
+		{
+			name: "body with trailing br tags",
+			input: `# Summary
+
+I added a new content
+
+need to keep
+
+<br><br><br><br>`,
+			expected: `# Summary
+
+I added a new content
+
+need to keep`,
+		},
+		{
+			name: "body with various br tag formats",
+			input: `Content here
+
+<br>
+<br/>
+<br />
+  <br>  <br/>  `,
+			expected: `Content here`,
+		},
+		{
+			name: "body with br tags in middle should keep",
+			input: `First part
+
+<br><br>
+
+Second part`,
+			expected: `First part
+
+<br><br>
+
+Second part`,
+		},
+		{
+			name: "body with only markdown headers no content",
+			input: `Summary
+---
+
+Test
+-----`,
+			expected: "",
+		},
+		{
+			name: "body with only hash headers no content",
+			input: `# Summary
+
+## Test
+
+### Another`,
+			expected: "",
+		},
+		{
+			name: "body with mixed empty headers",
+			input: `# Title
+
+Summary
+---
+
+Test
+====
+
+## Section`,
+			expected: "",
+		},
+		{
+			name: "body with headers and content should keep",
+			input: `Summary
+---
+
+This has content
+
+Test
+----
+
+More content here`,
+			expected: `Summary
+---
+
+This has content
+
+Test
+----
+
+More content here`,
+		},
+		{
+			name: "body with excessive blank lines after cleanup",
+			input: `First paragraph.
+
+<!-- Comment 1 -->
+
+
+
+<!-- Comment 2 -->
+
+
+
+
+Last paragraph.`,
+			expected: `First paragraph.
+
+Last paragraph.`,
+		},
+		{
+			name: "body with CRLF line endings",
+			input: "First line\r\n\r\nSecond line\r\n\r\n---\r\n* #123 Footer to remove",
+			expected: "First line\n\nSecond line",
+		},
+		{
+			name: "markdown comment at start of line only",
+			input: `This line is fine [//]: # (not at start)
+[//]: # (This should be removed)
+This []: # (should not) be removed`,
+			expected: `This line is fine [//]: # (not at start)
+
+This []: # (should not) be removed`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := cleanupPRBodyForMerge(tt.input)
+			if result != tt.expected {
+				t.Errorf("cleanupPRBodyForMerge() failed\nInput:\n%s\n\nExpected:\n%s\n\nGot:\n%s", tt.input, tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestDetectAutoGeneratedCommits_Logic tests the logic of detectAutoGeneratedCommits
+// Note: This is a limited test since the actual function depends on gh CLI
+// For full integration testing, use the shell test scripts
+func TestDetectAutoGeneratedCommits_Logic(t *testing.T) {
+	// This test demonstrates the expected behavior
+	// In real usage, the function calls gh CLI which we can't easily mock here
+	
+	tests := []struct {
+		name           string
+		commitCount    int
+		expectedResult bool
+		description    string
+	}{
+		{
+			name:           "single commit (normal PR)",
+			commitCount:    1,
+			expectedResult: false,
+			description:    "A normal PR should have exactly 1 commit",
+		},
+		{
+			name:           "two commits (CI added one)",
+			commitCount:    2,
+			expectedResult: true,
+			description:    "CI has added a commit if there are 2 commits",
+		},
+		{
+			name:           "multiple commits",
+			commitCount:    5,
+			expectedResult: true,
+			description:    "Multiple commits indicate CI or manual additions",
+		},
+		{
+			name:           "zero commits (edge case)",
+			commitCount:    0,
+			expectedResult: false,
+			description:    "Zero commits shouldn't happen but would not be auto-generated",
+		},
+	}
+	
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The actual detectAutoGeneratedCommits checks if commitCount > 1
+			hasAutoCommits := tt.commitCount > 1
+			if hasAutoCommits != tt.expectedResult {
+				t.Errorf("Logic test failed for %s: expected %v, got %v - %s", 
+					tt.name, tt.expectedResult, hasAutoCommits, tt.description)
+			}
+		})
+	}
+}
+
+func TestCleanupPRBodyForMerge_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name: "nested HTML comments",
+			input: `Content <!-- outer <!-- inner --> still outer --> after`,
+			expected: `Content  still outer --> after`, // non-greedy match stops at first -->
+		},
+		{
+			name: "unclosed HTML comment",
+			input: `Before <!-- unclosed comment
+
+Rest of content`,
+			expected: `Before <!-- unclosed comment
+
+Rest of content`,
+		},
+		{
+			name: "markdown comment with special characters",
+			input: `Text before
+[//]: # (Comment with special chars !@#$%^&*())
+Text after`,
+			expected: `Text before
+
+Text after`,
+		},
+		{
+			name: "only footer separator without content",
+			input: `---
+Footer only`,
+			expected: `---
+Footer only`, // --- at the start isn't a footer (no empty line before it)
+		},
+		{
+			name: "multiple footer separators",
+			input: `First part
+---
+Middle part
+
+---
+* #123 PR reference
+Last part`,
+			expected: `First part
+---
+Middle part`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := cleanupPRBodyForMerge(tt.input)
+			if result != tt.expected {
+				t.Errorf("cleanupPRBodyForMerge() edge case failed\nInput:\n%s\n\nExpected:\n%s\n\nGot:\n%s", tt.input, tt.expected, result)
+			}
+		})
+	}
+}

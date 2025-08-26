@@ -82,13 +82,16 @@ git pr land [--dry-run]
 
 Land (merge) all PRs in the current stack sequentially. The command will:
 - Merge PRs one by one from bottom to top of the stack
-- Update base branches automatically to prevent PR closures
+- Update base branches automatically to prevent GitHub from auto-closing dependent PRs
+- Delete branches after updating dependent PR bases (avoiding GitHub's auto-closure issue)
 - Wait for required CI checks if configured
+- Show real-time merge status with spinner animation
 - Detect CI-added commits automatically (by counting commits)
 - Clean up PR descriptions while preserving content:
   - Removes stack info footer (after last `---` with PR references)
   - Removes markdown comments (`[//]: #` and HTML `<!-- -->`)
-  - Preserves markdown headers with underlines (e.g., `Test` followed by `----`)
+  - Removes trailing `<br>` tags
+  - Detects and removes empty template bodies
   - Preserves all actual content including lists, code blocks, and formatting
 - Return to the main branch after landing
 

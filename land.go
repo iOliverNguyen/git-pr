@@ -34,6 +34,7 @@ type prInfo struct {
 	Title      string
 	URL        string
 	HeadSHA    string
+	HeadBranch string // branch name to delete after merge
 	BaseBranch string
 	Commit     *Commit
 }
@@ -72,7 +73,7 @@ func landStack(cfg landConfig) error {
 		debugf("found PR #%d for commit %s: %s", commit.PRNumber, commit.ShortHash(), commit.Title)
 
 		// get PR details
-		_ = must(githubGetPRByNumber(commit.PRNumber))
+		pr := must(githubGetPRByNumber(commit.PRNumber))
 		// construct PR URL
 		prURL := fmt.Sprintf("https://%s/%s/pull/%d", config.git.host, config.git.repo, commit.PRNumber)
 		prs = append(prs, prInfo{
@@ -80,6 +81,7 @@ func landStack(cfg landConfig) error {
 			Title:      commit.Title,
 			URL:        prURL,
 			HeadSHA:    commit.Hash,
+			HeadBranch: pr.Head.Ref, // store branch name for later deletion
 			BaseBranch: config.git.remoteTrunk,
 			Commit:     commit,
 		})
@@ -188,10 +190,27 @@ func landStack(cfg landConfig) error {
 				nextPR := prs[i+1]
 				fmt.Printf("  ⠼ Updating next PR #%d base to %s...\n", nextPR.Number, config.git.remoteTrunk)
 				if err := updatePRBase(nextPR.Number, config.git.remoteTrunk); err != nil {
-					// not fatal, GitHub might handle it automatically
+					// check if PR was closed
+					if strings.Contains(err.Error(), "closed") {
+						return fmt.Errorf("PR #%d was closed, cannot update base: %w", nextPR.Number, err)
+					}
+					// other errors might be recoverable
 					fmt.Printf("  ⚠ Could not update PR #%d base: %v\n", nextPR.Number, err)
 				} else {
 					fmt.Printf("  ✓ Updated PR #%d base\n", nextPR.Number)
+					// wait for GitHub to process the base change
+					time.Sleep(2 * time.Second)
+				}
+			}
+			
+			// delete the merged branch after updating dependent PRs
+			if cfg.deleteBranch && pr.HeadBranch != "" {
+				fmt.Printf("  ⠼ Deleting branch %s...\n", pr.HeadBranch)
+				if err := deleteRemoteBranch(pr.HeadBranch); err != nil {
+					// not fatal, just warn
+					fmt.Printf("  ⚠ Could not delete branch: %v\n", err)
+				} else {
+					fmt.Printf("  ✓ Deleted branch %s\n", pr.HeadBranch)
 				}
 			}
 		}
@@ -326,10 +345,10 @@ func mergePR(prNumber int, title, headSHA string, cfg landConfig) (string, error
 		args = append(args, "--match-head-commit", headSHA)
 	}
 
-	// delete branch if configured
-	if cfg.deleteBranch {
-		args = append(args, "--delete-branch")
-	}
+	// don't delete branch during merge - we'll do it after updating dependent PRs
+	// if cfg.deleteBranch {
+	//     args = append(args, "--delete-branch")
+	// }
 
 	// use auto mode if configured
 	if cfg.autoMode {
@@ -628,5 +647,11 @@ func checkPRMergeability(prNumber int) (string, string, error) {
 // updatePRBase updates the base branch of a PR
 func updatePRBase(prNumber int, newBase string) error {
 	_, err := gh("pr", "edit", strconv.Itoa(prNumber), "--base", newBase)
+	return err
+}
+
+// deleteRemoteBranch deletes a remote branch
+func deleteRemoteBranch(branchName string) error {
+	_, err := git("push", config.git.remote, "--delete", branchName)
 	return err
 }

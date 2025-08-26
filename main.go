@@ -486,11 +486,11 @@ func coalesce(a, b string) string {
 func runLandCommand() {
 	// parse land-specific flags
 	cfg := landConfig{
-		timeout:       30 * time.Second,
-		pollInterval:  10 * time.Second,
-		deleteBranch:  true, // github will handle branch deletion properly
-		requireChecks: false, // set to false for testing
-		autoMode:      false,
+		timeout:       5 * time.Minute, // increased timeout for merge completion
+		pollInterval:  5 * time.Second,  // check more frequently
+		deleteBranch:  true,             // github will handle branch deletion properly
+		requireChecks: false,            // set to false for testing
+		autoMode:      true,             // always use --auto to handle branch protection
 		dryRun:        config.dryRun,
 	}
 

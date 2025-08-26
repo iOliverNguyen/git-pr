@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,7 +19,22 @@ type landConfig struct {
 	requireChecks bool
 	autoMode      bool
 	dryRun        bool
+	interactive   bool          // enable interactive dashboard
+	mergeStrategy MergeStrategy // merge strategy for interactive mode
+	autoRetry     bool          // auto-retry failed checks
+	pauseOnFail   bool          // pause on failures for manual intervention
+	stopAtLast    bool          // stop at last PR if it has failures
 }
+
+// MergeStrategy defines when to merge PRs
+type MergeStrategy int
+
+const (
+	MergeRequiredOnly MergeStrategy = iota + 1 // wait for required checks only
+	MergeAllChecks                             // wait for all checks to pass
+	MergeCustom                                // wait for custom important checks
+	MergeManual                                // manual confirmation for each PR
+)
 
 // checkStatus represents the status of a CI check
 type checkStatus struct {
@@ -37,6 +54,27 @@ type prInfo struct {
 	HeadBranch string // branch name to delete after merge
 	BaseBranch string
 	Commit     *Commit
+	// dashboard fields
+	Mergeable      string        // MERGEABLE, CONFLICTING, UNKNOWN (from mergeable field)
+	MergeStatus    string        // CLEAN, UNSTABLE, BLOCKED, etc. (from mergeStateStatus)
+	ChecksStatus   string        // PENDING, PASSING, FAILING
+	Checks         []checkStatus // detailed check info
+	State          string        // OPEN, MERGED, CLOSED
+	ReviewDecision string        // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED
+	ReviewStatus   string        // summary of review states
+	LastUpdated    time.Time     // when status was last fetched
+}
+
+// dashboardState holds the state of the interactive dashboard
+type dashboardState struct {
+	prs           []prInfo
+	currentPR     int
+	mergeStrategy MergeStrategy
+	autoRetry     bool
+	pauseOnFail   bool
+	stopAtLast    bool
+	lastUpdate    time.Time
+	updateError   error
 }
 
 // landStack orchestrates the landing of a stack of PRs
@@ -87,6 +125,11 @@ func landStack(cfg landConfig) error {
 		})
 	}
 
+	// if interactive mode, show dashboard
+	if cfg.interactive {
+		return landStackInteractive(prs, cfg)
+	}
+
 	// land PRs from bottom to top (reverse order)
 	for i := 0; i < len(prs); i++ {
 		pr := prs[i]
@@ -104,7 +147,7 @@ func landStack(cfg landConfig) error {
 		if err != nil {
 			return fmt.Errorf("failed to check PR #%d mergeability: %w", pr.Number, err)
 		}
-		
+
 		// handle different merge states
 		switch mergeStatus {
 		case "CONFLICTING":
@@ -136,11 +179,12 @@ func landStack(cfg landConfig) error {
 
 		// wait for checks if required
 		if cfg.requireChecks {
-			fmt.Printf("  ⠼ Waiting for checks...\n")
+			fmt.Printf("  ⠼ Waiting for checks...")
 			if err := waitForChecks(pr.Number, cfg); err != nil {
+				fmt.Printf("\r  ❌ Checks failed for PR #%d\n", pr.Number)
 				return fmt.Errorf("checks failed for PR #%d: %w", pr.Number, err)
 			}
-			fmt.Printf("  ✓ All checks passed\n")
+			fmt.Printf("\r  ✓ All checks passed     \n")
 		} else {
 			debugf("skipping CI checks (requireChecks=false)")
 		}
@@ -159,9 +203,9 @@ func landStack(cfg landConfig) error {
 		if cfg.dryRun {
 			fmt.Printf("  [DRY-RUN] Would merge PR\n")
 		} else {
-			fmt.Printf("  ⠼ Merging PR...\n")
+			fmt.Printf("  ⠼ Merging PR...")
 			output, err := mergePR(pr.Number, pr.Title, pr.HeadSHA, cfg)
-			
+
 			// check if auto-merge failed due to not being configured
 			if err != nil && strings.Contains(output, "enablePullRequestAutoMerge") {
 				debugf("auto-merge not enabled for repo, falling back to immediate merge")
@@ -170,57 +214,63 @@ func landStack(cfg landConfig) error {
 				output, err = mergePR(pr.Number, pr.Title, pr.HeadSHA, cfg)
 				cfg.autoMode = true // restore for next PR
 			}
-			
+
 			if err != nil {
+				fmt.Printf("\r  ❌ Failed to merge PR #%d\n", pr.Number)
 				return fmt.Errorf("failed to merge PR #%d: %w", pr.Number, err)
 			}
-			
+
 			// if we used auto mode, wait for merge to complete
 			if cfg.autoMode {
-				fmt.Printf("  ✓ Merge queued with --auto\n")
-				fmt.Printf("  ⠼ Waiting for merge to complete...\n")
+				fmt.Printf("\r  ✓ Merge queued with --auto\n")
+				fmt.Printf("  ⠼ Waiting for merge to complete...")
 				if err := waitForMerge(pr.Number, pr.URL, cfg); err != nil {
+					fmt.Printf("\r  ❌ Failed waiting for merge\n")
 					return fmt.Errorf("failed waiting for PR #%d to merge: %w", pr.Number, err)
 				}
+				fmt.Printf("\r  ✓ Merged to %s                    \n", config.git.remoteTrunk)
+			} else {
+				fmt.Printf("\r  ✓ Merged to %s\n", config.git.remoteTrunk)
 			}
-			fmt.Printf("  ✓ Merged to %s\n", config.git.remoteTrunk)
-			
+
 			// update next PR's base AFTER merge completes
 			if i < len(prs)-1 {
 				nextPR := prs[i+1]
-				fmt.Printf("  ⠼ Updating next PR #%d base to %s...\n", nextPR.Number, config.git.remoteTrunk)
+				fmt.Printf("  ⠼ Updating next PR #%d base to %s...", nextPR.Number, config.git.remoteTrunk)
 				if err := updatePRBase(nextPR.Number, config.git.remoteTrunk); err != nil {
 					// check if PR was closed
 					if strings.Contains(err.Error(), "closed") {
+						fmt.Printf("\r  ❌ PR #%d was closed, cannot update base\n", nextPR.Number)
 						return fmt.Errorf("PR #%d was closed, cannot update base: %w", nextPR.Number, err)
 					}
 					// other errors might be recoverable
-					fmt.Printf("  ⚠ Could not update PR #%d base: %v\n", nextPR.Number, err)
+					fmt.Printf("\r  ⚠ Could not update PR #%d base: %v\n", nextPR.Number, err)
 				} else {
-					fmt.Printf("  ✓ Updated PR #%d base\n", nextPR.Number)
+					fmt.Printf("\r  ✓ Updated PR #%d base                      \n", nextPR.Number)
 					// wait for GitHub to process the base change
 					time.Sleep(2 * time.Second)
 				}
 			}
-			
+
 			// delete the merged branch after updating dependent PRs
 			if cfg.deleteBranch && pr.HeadBranch != "" {
-				fmt.Printf("  ⠼ Deleting branch %s...\n", pr.HeadBranch)
+				fmt.Printf("  ⠼ Deleting branch %s...", pr.HeadBranch)
 				if err := deleteRemoteBranch(pr.HeadBranch); err != nil {
 					// not fatal, just warn
-					fmt.Printf("  ⚠ Could not delete branch: %v\n", err)
+					fmt.Printf("\r  ⚠ Could not delete branch: %v\n", err)
 				} else {
-					fmt.Printf("  ✓ Deleted branch %s\n", pr.HeadBranch)
+					fmt.Printf("\r  ✓ Deleted branch %s                    \n", pr.HeadBranch)
 				}
 			}
 		}
 
 		// pull latest main
 		if !cfg.dryRun {
-			fmt.Printf("  ⠼ Pulling latest %s...\n", config.git.remoteTrunk)
+			fmt.Printf("  ⠼ Pulling latest %s...", config.git.remoteTrunk)
 			must(git("fetch", config.git.remote, config.git.remoteTrunk))
 			must(git("checkout", config.git.remoteTrunk))
 			must(git("pull", config.git.remote, config.git.remoteTrunk))
+			fmt.Printf("\r  ✓ Pulled latest %s     \n", config.git.remoteTrunk)
 		}
 
 		if !cfg.dryRun {
@@ -233,6 +283,658 @@ func landStack(cfg landConfig) error {
 	} else {
 		fmt.Printf("\n✓ Successfully landed %d PRs\n", len(prs))
 	}
+	return nil
+}
+
+// landStackInteractive shows an interactive dashboard for landing PRs
+func landStackInteractive(prs []prInfo, cfg landConfig) error {
+	state := &dashboardState{
+		prs:           prs,
+		currentPR:     0,
+		mergeStrategy: cfg.mergeStrategy,
+		autoRetry:     cfg.autoRetry,
+		pauseOnFail:   cfg.pauseOnFail,
+		stopAtLast:    cfg.stopAtLast,
+	}
+
+	// fetch initial status for all PRs
+	fmt.Print("\033[2J\033[H") // clear screen first
+	fmt.Print("⠼ Fetching PR status...")
+	updateAllPRStatus(state)
+
+	// main interactive loop
+	for {
+		// display the dashboard
+		showDashboard(state)
+
+		// check if all PRs are merged
+		if allPRsMerged(state) {
+			fmt.Printf("\n✓ Successfully landed %d PRs\n", len(prs))
+			return nil
+		}
+
+		// prompt for action
+		fmt.Print("\nAction ([y]es to land, [r]efresh, [q]uit): ")
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		action := strings.TrimSpace(strings.ToLower(input))
+
+		switch action {
+		case "y", "yes":
+			// start landing
+			return landStackFromDashboard(state, cfg)
+
+		case "r", "refresh":
+			// refresh status
+			fmt.Print("\033[2J\033[H") // clear entire screen and move cursor to top
+			fmt.Print("⠼ Refreshing status...")
+			updateAllPRStatus(state)
+			fmt.Print("\r                      \r") // clear the refreshing message
+
+		case "q", "quit":
+			// quit
+			fmt.Println("\n⚠ Landing cancelled")
+			return fmt.Errorf("cancelled by user")
+
+		default:
+			fmt.Println("Unknown action. Use [y]es, [r]efresh, or [q]uit")
+		}
+	}
+}
+
+// showDashboard displays the interactive dashboard
+func showDashboard(state *dashboardState) {
+	// clear screen for clean display
+	fmt.Print("\033[2J\033[H")
+
+	fmt.Println("================== Stack Landing Status ==================")
+	fmt.Printf("Stack: %d PRs\n\n", len(state.prs))
+
+	// show each PR with its status
+	for i, pr := range state.prs {
+		statusIcon := getPRStatusIcon(pr)
+
+		// show PR number and title (at least 80 chars)
+		title := pr.Title
+		if len(title) > 80 {
+			title = title[:77] + "..."
+		}
+		fmt.Printf("%2d. PR #%-4d %s %s\n", i+1, pr.Number, statusIcon, title)
+		fmt.Printf("    %s\n", pr.URL)
+
+		// always show merge status
+		statusText := ""
+		if pr.Mergeable == "CONFLICTING" {
+			statusText = "⚠ Has conflicts - must be resolved"
+		} else if pr.Mergeable == "MERGEABLE" && pr.MergeStatus == "UNSTABLE" {
+			statusText = "🟡 Mergeable but checks unstable (non-required checks failing)"
+		} else if pr.MergeStatus != "" {
+			switch pr.MergeStatus {
+			case "CLEAN", "MERGEABLE", "HAS_HOOKS":
+				statusText = "🟢 Ready to merge"
+			case "CONFLICTING", "DIRTY":
+				statusText = "⚠ Has conflicts - must be resolved"
+			case "BLOCKED":
+				statusText = "🔒 Blocked by branch protection"
+			case "BEHIND":
+				statusText = "↓ Behind base branch"
+			case "UNSTABLE":
+				statusText = "⏳ Checks pending or failing"
+			case "UNKNOWN":
+				statusText = "❓ Status unknown - computing..."
+			case "DRAFT":
+				statusText = "📝 Draft PR - not ready to merge"
+			default:
+				statusText = pr.MergeStatus
+			}
+		}
+		if statusText != "" {
+			fmt.Printf("    %s\n", statusText)
+		}
+
+		// show review status
+		if pr.ReviewStatus != "" {
+			fmt.Printf("    %s\n", pr.ReviewStatus)
+		}
+
+		// show individual CI checks
+		if len(pr.Checks) > 0 {
+			fmt.Printf("    Checks:\n")
+			for _, check := range pr.Checks {
+				checkIcon := "⏳"
+				switch check.Bucket {
+				case "pass", "success":
+					checkIcon = "✅"
+				case "fail", "failure", "cancel":
+					checkIcon = "❌"
+				case "skipping", "neutral":
+					checkIcon = "◻️"
+				case "pending":
+					checkIcon = "⏳"
+				}
+				fmt.Printf("      %s %s\n", checkIcon, check.Name)
+			}
+		} else if pr.ChecksStatus != "NONE" && pr.ChecksStatus != "" {
+			// fallback to summary if no detailed checks
+			if pr.ChecksStatus == "FAILING" {
+				fmt.Printf("    ❌ Checks failing\n")
+			} else if pr.ChecksStatus == "PENDING" {
+				fmt.Printf("    ⏳ Checks pending\n")
+			} else if pr.ChecksStatus == "PASSING" {
+				fmt.Printf("    ✅ All checks passed\n")
+			}
+		}
+
+		fmt.Println()
+	}
+
+	// show summary
+	fmt.Println("-----------------------------------------------------------")
+	readyCount := 0
+	blockedCount := 0
+	mergedCount := 0
+	for _, pr := range state.prs {
+		if pr.State == "MERGED" {
+			mergedCount++
+		} else if pr.State == "OPEN" && pr.Mergeable == "MERGEABLE" {
+			readyCount++
+		} else if pr.State == "OPEN" {
+			blockedCount++
+		}
+	}
+
+	if mergedCount > 0 {
+		fmt.Printf("Status: %d merged, %d ready, %d blocked\n", mergedCount, readyCount, blockedCount)
+	} else {
+		fmt.Printf("Status: %d ready to merge, %d blocked\n", readyCount, blockedCount)
+	}
+
+	if state.updateError != nil {
+		fmt.Printf("⚠ Error updating status: %v\n", state.updateError)
+	}
+}
+
+// updateAllPRStatus fetches the latest status for all PRs using GraphQL
+func updateAllPRStatus(state *dashboardState) {
+	state.lastUpdate = time.Now()
+	state.updateError = nil
+
+	// build PR numbers list for GraphQL query
+	prNumbers := make([]int, len(state.prs))
+	for i, pr := range state.prs {
+		prNumbers[i] = pr.Number
+	}
+
+	// fetch all PR statuses in one GraphQL query
+	if err := updatePRStatusBatch(state.prs); err != nil {
+		state.updateError = err
+		debugf("failed to batch update PR statuses: %v", err)
+		
+		// fallback to individual updates
+		for i := range state.prs {
+			if err := updatePRStatus(&state.prs[i]); err != nil {
+				debugf("failed to update PR #%d status: %v", state.prs[i].Number, err)
+			}
+		}
+	}
+}
+
+// updatePRStatusBatch fetches status for multiple PRs using GraphQL
+func updatePRStatusBatch(prs []prInfo) error {
+	if len(prs) == 0 {
+		return nil
+	}
+
+	// build GraphQL query for all PRs
+	query := `query {
+		repository(owner: "%s", name: "%s") {`
+	
+	// parse repo from config
+	parts := strings.Split(config.git.repo, "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid repo format: %s", config.git.repo)
+	}
+	owner, repo := parts[0], parts[1]
+	
+	query = fmt.Sprintf(query, owner, repo)
+	
+	// add each PR to query
+	for i, pr := range prs {
+		query += fmt.Sprintf(`
+			pr%d: pullRequest(number: %d) {
+				number
+				state
+				mergeable
+				mergeStateStatus
+				reviewDecision
+				reviews(last: 10) {
+					nodes {
+						state
+						author {
+							login
+						}
+					}
+				}
+				statusCheckRollup {
+					contexts(first: 100) {
+						nodes {
+							__typename
+							... on CheckRun {
+								name
+								status
+								conclusion
+							}
+							... on StatusContext {
+								context
+								state
+							}
+						}
+					}
+				}
+			}`, i, pr.Number)
+	}
+	
+	query += `
+		}
+	}`
+	
+	// execute GraphQL query
+	output, err := gh("api", "graphql", "-f", fmt.Sprintf("query=%s", query))
+	if err != nil {
+		return err
+	}
+	
+	// parse response
+	var response struct {
+		Data struct {
+			Repository map[string]struct {
+				Number           int    `json:"number"`
+				State            string `json:"state"`
+				Mergeable        string `json:"mergeable"`
+				MergeStateStatus string `json:"mergeStateStatus"`
+				ReviewDecision   string `json:"reviewDecision"`
+				Reviews struct {
+					Nodes []struct {
+						State  string `json:"state"`
+						Author struct {
+							Login string `json:"login"`
+						} `json:"author"`
+					} `json:"nodes"`
+				} `json:"reviews"`
+				StatusCheckRollup struct {
+					Contexts struct {
+						Nodes []struct {
+							TypeName   string `json:"__typename"`
+							Name       string `json:"name"`
+							Context    string `json:"context"`
+							Status     string `json:"status"`
+							State      string `json:"state"`
+							Conclusion string `json:"conclusion"`
+						} `json:"nodes"`
+					} `json:"contexts"`
+				} `json:"statusCheckRollup"`
+			} `json:",inline"`
+		} `json:"data"`
+	}
+	
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		return err
+	}
+	
+	// update each PR with fetched data
+	for i := range prs {
+		key := fmt.Sprintf("pr%d", i)
+		if prData, ok := response.Data.Repository[key]; ok {
+			prs[i].State = prData.State
+			prs[i].Mergeable = prData.Mergeable
+			prs[i].MergeStatus = prData.MergeStateStatus
+			prs[i].ReviewDecision = prData.ReviewDecision
+			prs[i].LastUpdated = time.Now()
+			
+			// process reviews to get review status
+			approved := 0
+			changesRequested := 0
+			commented := 0
+			for _, review := range prData.Reviews.Nodes {
+				switch review.State {
+				case "APPROVED":
+					approved++
+				case "CHANGES_REQUESTED":
+					changesRequested++
+				case "COMMENTED":
+					commented++
+				}
+			}
+			if changesRequested > 0 {
+				prs[i].ReviewStatus = fmt.Sprintf("❌ %d changes requested", changesRequested)
+			} else if approved > 0 {
+				prs[i].ReviewStatus = fmt.Sprintf("✅ %d approved", approved)
+			} else if prData.ReviewDecision == "REVIEW_REQUIRED" {
+				prs[i].ReviewStatus = "⏳ Review required"
+			} else if commented > 0 {
+				prs[i].ReviewStatus = fmt.Sprintf("💬 %d comments", commented)
+			} else {
+				prs[i].ReviewStatus = ""
+			}
+			
+			// process checks
+			prs[i].Checks = nil
+			passing := 0
+			failing := 0
+			pending := 0
+			
+			for _, check := range prData.StatusCheckRollup.Contexts.Nodes {
+				// convert to checkStatus
+				cs := checkStatus{}
+				
+				if check.TypeName == "CheckRun" {
+					cs.Name = check.Name
+					// determine bucket based on conclusion/status
+					switch check.Conclusion {
+					case "SUCCESS":
+						cs.Bucket = "pass"
+						passing++
+					case "FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED":
+						cs.Bucket = "fail"
+						failing++
+					default:
+						if check.Status == "COMPLETED" {
+							cs.Bucket = "pass"
+							passing++
+						} else {
+							cs.Bucket = "pending"
+							pending++
+						}
+					}
+				} else if check.TypeName == "StatusContext" {
+					cs.Name = check.Context
+					switch check.State {
+					case "SUCCESS":
+						cs.Bucket = "pass"
+						passing++
+					case "FAILURE", "ERROR":
+						cs.Bucket = "fail"
+						failing++
+					default:
+						cs.Bucket = "pending"
+						pending++
+					}
+				}
+				
+				prs[i].Checks = append(prs[i].Checks, cs)
+			}
+			
+			// set overall check status
+			if failing > 0 {
+				prs[i].ChecksStatus = "FAILING"
+			} else if pending > 0 {
+				prs[i].ChecksStatus = "PENDING"
+			} else if passing > 0 {
+				prs[i].ChecksStatus = "PASSING"
+			} else {
+				prs[i].ChecksStatus = "NONE"
+			}
+		}
+	}
+	
+	return nil
+}
+
+// updatePRStatus fetches the latest status for a single PR
+func updatePRStatus(pr *prInfo) error {
+	// get PR details
+	output, err := gh("pr", "view", strconv.Itoa(pr.Number),
+		"--json", "state,mergeable,mergeStateStatus,statusCheckRollup")
+	if err != nil {
+		return err
+	}
+
+	var data struct {
+		State             string `json:"state"`
+		Mergeable         string `json:"mergeable"`
+		MergeStateStatus  string `json:"mergeStateStatus"`
+		StatusCheckRollup []struct {
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"statusCheckRollup"`
+	}
+
+	if err := json.Unmarshal([]byte(output), &data); err != nil {
+		return err
+	}
+
+	pr.State = data.State
+	pr.Mergeable = data.Mergeable
+	pr.MergeStatus = data.MergeStateStatus
+	pr.LastUpdated = time.Now()
+
+	// determine checks status
+	if len(data.StatusCheckRollup) == 0 {
+		pr.ChecksStatus = "NONE"
+	} else {
+		passing := 0
+		failing := 0
+		pending := 0
+
+		for _, check := range data.StatusCheckRollup {
+			switch check.Conclusion {
+			case "SUCCESS", "NEUTRAL", "SKIPPED":
+				passing++
+			case "FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED":
+				failing++
+			default:
+				pending++
+			}
+		}
+
+		if failing > 0 {
+			pr.ChecksStatus = "FAILING"
+		} else if pending > 0 {
+			pr.ChecksStatus = "PENDING"
+		} else {
+			pr.ChecksStatus = "PASSING"
+		}
+	}
+
+	// fetch detailed checks
+	pr.Checks = nil // clear old checks
+	checksOutput, err := gh("pr", "checks", strconv.Itoa(pr.Number), "--json", "name,state,bucket,workflow,description")
+	if err == nil {
+		var checks []checkStatus
+		if err := json.Unmarshal([]byte(checksOutput), &checks); err == nil {
+			pr.Checks = checks
+		}
+	}
+
+	return nil
+}
+
+// helper functions
+
+func getPRStatusIcon(pr prInfo) string {
+	switch pr.State {
+	case "MERGED":
+		return "✅"
+	case "CLOSED":
+		return "❌"
+	default:
+		// first check mergeable field for conflicts
+		if pr.Mergeable == "CONFLICTING" {
+			return "⚠️"
+		}
+		
+		// check if it's mergeable despite unstable status
+		if pr.Mergeable == "MERGEABLE" {
+			// even if unstable, it's still mergeable
+			if pr.MergeStatus == "UNSTABLE" {
+				return "🟡" // yellow circle for mergeable but unstable
+			}
+			return "🟢" // green for clean mergeable
+		}
+		
+		// fallback to mergeStateStatus
+		switch pr.MergeStatus {
+		case "CONFLICTING", "DIRTY":
+			return "⚠️"
+		case "BLOCKED":
+			return "🔒"
+		case "BEHIND":
+			return "⬇️"
+		case "UNSTABLE":
+			return "⏳"
+		case "UNKNOWN":
+			return "❓"
+		case "DRAFT":
+			return "📝"
+		case "HAS_HOOKS", "MERGEABLE", "CLEAN":
+			return "🟢"
+		default:
+			return "◻️"
+		}
+	}
+}
+
+func getChecksIcon(pr prInfo) string {
+	switch pr.ChecksStatus {
+	case "PASSING":
+		return "✅"
+	case "FAILING":
+		return "❌"
+	case "PENDING":
+		return "⏳"
+	default:
+		return "  "
+	}
+}
+
+func truncateTitle(title string, maxLen int) string {
+	if len(title) <= maxLen {
+		return title
+	}
+	return title[:maxLen-3] + "..."
+}
+
+func allPRsMerged(state *dashboardState) bool {
+	for _, pr := range state.prs {
+		if pr.State != "MERGED" {
+			return false
+		}
+	}
+	return true
+}
+
+// landStackFromDashboard starts the landing process from the dashboard
+func landStackFromDashboard(state *dashboardState, cfg landConfig) error {
+	fmt.Println("\n🚀 Starting landing process...")
+
+	// use the existing landing logic but with the PR info we already have
+	for i, pr := range state.prs {
+		// check if already merged
+		if pr.State == "MERGED" {
+			fmt.Printf("\n[%d/%d] PR #%d already merged\n", i+1, len(state.prs), pr.Number)
+			continue
+		}
+
+		fmt.Printf("\n[%d/%d] Landing PR #%d: %s\n", i+1, len(state.prs), pr.Number, pr.Title)
+		fmt.Printf("  URL: %s\n", pr.URL)
+
+		// check merge status
+		if pr.MergeStatus == "CONFLICTING" {
+			return fmt.Errorf("PR #%d has conflicts that must be resolved\n  Please resolve at: %s",
+				pr.Number, pr.URL)
+		}
+
+		// wait for checks if configured
+		if cfg.requireChecks {
+			fmt.Printf("  ⠼ Waiting for checks...")
+			if err := waitForChecks(pr.Number, cfg); err != nil {
+				fmt.Printf("\r  ❌ Checks failed for PR #%d: %v\n", pr.Number, err)
+				return fmt.Errorf("checks failed for PR #%d: %w", pr.Number, err)
+			}
+			fmt.Printf("\r  ✓ All checks passed     \n")
+		}
+
+		// detect auto-generated commits
+		debugf("checking for auto-generated commits on PR #%d", pr.Number)
+		currentHeadSHA, hasAutoCommits := detectAutoGeneratedCommits(pr.Number)
+		if hasAutoCommits {
+			fmt.Printf("  ⚠ CI added commits, head SHA changed: %s -> %s\n", pr.HeadSHA[:8], currentHeadSHA[:8])
+			pr.HeadSHA = currentHeadSHA
+		}
+
+		// merge the PR
+		fmt.Printf("  ⠼ Merging PR...")
+		output, err := mergePR(pr.Number, pr.Title, pr.HeadSHA, cfg)
+
+		// check if auto-merge failed due to not being configured
+		if err != nil && strings.Contains(output, "enablePullRequestAutoMerge") {
+			debugf("auto-merge not enabled for repo, falling back to immediate merge")
+			// retry without --auto flag
+			cfg.autoMode = false
+			output, err = mergePR(pr.Number, pr.Title, pr.HeadSHA, cfg)
+			cfg.autoMode = true // restore for next PR
+		}
+
+		if err != nil {
+			fmt.Printf("\r  ❌ Failed to merge PR #%d: %v\n", pr.Number, err)
+			return fmt.Errorf("failed to merge PR #%d: %w", pr.Number, err)
+		}
+
+		// if we used auto mode, wait for merge to complete
+		if cfg.autoMode {
+			fmt.Printf("\r  ✓ Merge queued with --auto\n")
+			fmt.Printf("  ⠼ Waiting for merge to complete...")
+			if err := waitForMerge(pr.Number, pr.URL, cfg); err != nil {
+				fmt.Printf("\r  ❌ Failed waiting for PR #%d to merge: %v\n", pr.Number, err)
+				return fmt.Errorf("failed waiting for PR #%d to merge: %w", pr.Number, err)
+			}
+			fmt.Printf("\r  ✓ Merged to %s                    \n", config.git.remoteTrunk)
+		} else {
+			fmt.Printf("\r  ✓ Merged to %s\n", config.git.remoteTrunk)
+		}
+
+		// update next PR's base AFTER merge completes
+		if i < len(state.prs)-1 {
+			nextPR := state.prs[i+1]
+			fmt.Printf("  ⠼ Updating next PR #%d base to %s...", nextPR.Number, config.git.remoteTrunk)
+			if err := updatePRBase(nextPR.Number, config.git.remoteTrunk); err != nil {
+				// check if PR was closed
+				if strings.Contains(err.Error(), "closed") {
+					fmt.Printf("\r  ❌ PR #%d was closed, cannot update base\n", nextPR.Number)
+					return fmt.Errorf("PR #%d was closed, cannot update base: %w", nextPR.Number, err)
+				}
+				// other errors might be recoverable
+				fmt.Printf("\r  ⚠ Could not update PR #%d base: %v\n", nextPR.Number, err)
+			} else {
+				fmt.Printf("\r  ✓ Updated PR #%d base                      \n", nextPR.Number)
+				// wait for GitHub to process the base change
+				time.Sleep(2 * time.Second)
+			}
+		}
+
+		// delete the merged branch after updating dependent PRs
+		if cfg.deleteBranch && pr.HeadBranch != "" {
+			fmt.Printf("  ⠼ Deleting branch %s...", pr.HeadBranch)
+			if err := deleteRemoteBranch(pr.HeadBranch); err != nil {
+				// not fatal, just warn
+				fmt.Printf("\r  ⚠ Could not delete branch: %v\n", err)
+			} else {
+				fmt.Printf("\r  ✓ Deleted branch %s                    \n", pr.HeadBranch)
+			}
+		}
+
+		// pull latest main
+		fmt.Printf("  ⠼ Pulling latest %s...", config.git.remoteTrunk)
+		must(git("fetch", config.git.remote, config.git.remoteTrunk))
+		must(git("checkout", config.git.remoteTrunk))
+		must(git("pull", config.git.remote, config.git.remoteTrunk))
+		fmt.Printf("\r  ✓ Pulled latest %s     \n", config.git.remoteTrunk)
+
+		fmt.Printf("  ✓ PR #%d successfully landed\n", pr.Number)
+	}
+
+	fmt.Printf("\n✓ Successfully landed %d PRs\n", len(state.prs))
 	return nil
 }
 
@@ -311,7 +1013,7 @@ func detectAutoGeneratedCommits(prNumber int) (string, bool) {
 	debugf("current head SHA for PR #%d: %s", prNumber, prData.HeadRefOid[:8])
 
 	// for now, just return the current SHA
-	// TODO: compare with our tracked commit to detect auto-generated commits
+	// future enhancement: compare with our tracked commit to detect auto-generated commits
 	return prData.HeadRefOid, false
 }
 
@@ -345,10 +1047,7 @@ func mergePR(prNumber int, title, headSHA string, cfg landConfig) (string, error
 		args = append(args, "--match-head-commit", headSHA)
 	}
 
-	// don't delete branch during merge - we'll do it after updating dependent PRs
-	// if cfg.deleteBranch {
-	//     args = append(args, "--delete-branch")
-	// }
+	// note: we don't use --delete-branch here, we delete after updating dependent PRs
 
 	// use auto mode if configured
 	if cfg.autoMode {
@@ -364,22 +1063,22 @@ func mergePR(prNumber int, title, headSHA string, cfg landConfig) (string, error
 var (
 	// HTML comments: <!-- comment --> or <!--- comment --->
 	htmlCommentRegex = regexp.MustCompile(`(?s)<!--.*?-->`)
-	
+
 	// Markdown link reference comments: [//]: # (comment), []: # (comment), etc.
 	markdownCommentRegex = regexp.MustCompile(`(?m)^\[[\w/]*]:\s*#\s*[("'].*[)"']?\s*$`)
-	
+
 	// PR reference in stack footer: * #123
 	prReferenceRegex = regexp.MustCompile(`^\*.*#\d+`)
-	
+
 	// Multiple consecutive blank lines
 	multipleBlankLinesRegex = regexp.MustCompile(`\n{3,}`)
-	
+
 	// Trailing <br> tags at end of body
 	trailingBrRegex = regexp.MustCompile(`(?s)(\s*<br\s*\/?>)+\s*$`)
-	
+
 	// Empty template with just "# Summary" and whitespace/br tags
 	emptyTemplateRegex = regexp.MustCompile(`(?s)^#\s*Summary\s*(\n|\s|<br\s*\/?>)*$`)
-	
+
 	// Body with only headers and no content
 	onlyHeadersRegex = regexp.MustCompile(`(?s)^((#+\s*\w+\s*)|(\w+\s*\n\s*[-=]+\s*)|\s)*$`)
 )
@@ -414,10 +1113,10 @@ func cleanupPRBodyForMerge(body string) string {
 func removeComments(body string) string {
 	// remove HTML comments: <!-- --> and <!--- --->
 	body = htmlCommentRegex.ReplaceAllString(body, "")
-	
+
 	// remove markdown link reference comments: [//]: #, []: #, etc.
 	body = markdownCommentRegex.ReplaceAllString(body, "")
-	
+
 	return body
 }
 
@@ -425,12 +1124,12 @@ func removeComments(body string) string {
 func removeStackFooter(body string) string {
 	lines := strings.Split(body, "\n")
 	footerStart := findStackFooterStart(lines)
-	
+
 	if footerStart >= 0 {
 		lines = lines[:footerStart]
 		return strings.Join(lines, "\n")
 	}
-	
+
 	return body
 }
 
@@ -442,19 +1141,19 @@ func findStackFooterStart(lines []string) int {
 		if strings.TrimSpace(lines[i]) != "---" {
 			continue
 		}
-		
+
 		// check if preceded by empty line (to distinguish from markdown headers)
 		if !hasPrecedingEmptyLine(lines, i) {
 			continue
 		}
-		
+
 		// check if followed by PR references
 		if hasStackInfoAfter(lines, i) {
 			// find the first empty line before the separator
 			return findFirstEmptyLineBefore(lines, i)
 		}
 	}
-	
+
 	return -1
 }
 
@@ -498,27 +1197,27 @@ func findFirstEmptyLineBefore(lines []string, i int) int {
 func cleanupFormatting(body string) string {
 	// collapse multiple consecutive blank lines to maximum of 2
 	body = multipleBlankLinesRegex.ReplaceAllString(body, "\n\n")
-	
+
 	// remove trailing <br> tags
 	body = trailingBrRegex.ReplaceAllString(body, "")
-	
+
 	return body
 }
 
 // isEmptyBody checks if the body is essentially empty (only template or headers)
 func isEmptyBody(body string) bool {
 	trimmed := strings.TrimSpace(body)
-	
+
 	// check for empty template (just "# Summary" with whitespace)
 	if emptyTemplateRegex.MatchString(trimmed) {
 		return true
 	}
-	
+
 	// check if only contains headers without actual content
 	if onlyHeadersRegex.MatchString(trimmed) {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -526,7 +1225,7 @@ func isEmptyBody(body string) bool {
 func waitForMerge(prNumber int, prURL string, cfg landConfig) error {
 	startTime := time.Now()
 	debugf("waiting for PR #%d to be merged (timeout: %v)", prNumber, cfg.timeout)
-	
+
 	// spinner characters for animation
 	spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	spinnerIndex := 0
@@ -534,7 +1233,7 @@ func waitForMerge(prNumber int, prURL string, cfg landConfig) error {
 	for {
 		// calculate elapsed time
 		elapsed := time.Since(startTime)
-		
+
 		// check if timeout exceeded
 		if elapsed > cfg.timeout {
 			fmt.Printf("\n") // new line before error
@@ -590,9 +1289,9 @@ func waitForMerge(prNumber int, prURL string, cfg landConfig) error {
 
 		// update status on same line
 		spinner := spinners[spinnerIndex]
-		fmt.Printf("\r\033[K  %s Waiting for merge... (%ds) - Status: %s, Merge: %s", 
+		fmt.Printf("\r\033[K  %s Waiting for merge... (%ds) - Status: %s, Merge: %s",
 			spinner, int(elapsed.Seconds()), prData.State, mergeStateDisplay)
-		
+
 		// update spinner index
 		spinnerIndex = (spinnerIndex + 1) % len(spinners)
 

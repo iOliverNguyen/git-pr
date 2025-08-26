@@ -36,14 +36,16 @@ var regexpDraft = regexp.MustCompile(`(?i)\[draft]`)
 
 func main() {
 	// check if running land subcommand before parsing flags
-	if len(os.Args) > 1 && os.Args[1] == "land" {
-		// remove "land" from args so flag parsing works correctly
-		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
-		config = LoadConfig()
-		runLandCommand()
-		return
+	for i, arg := range os.Args {
+		if arg == "land" {
+			// remove "land" from args so flag parsing works correctly
+			os.Args = append(os.Args[:i], os.Args[i+1:]...)
+			config = LoadConfig()
+			runLandCommand()
+			return
+		}
 	}
-	
+
 	config = LoadConfig()
 
 	// ensure no uncommitted changes
@@ -290,7 +292,7 @@ func findCommitsWithoutRemoteRef(commits []*Commit) iter.Seq[*Commit] {
 func generateStackInfo(stackedCommits []*Commit, currentCommit *Commit) string {
 	var stackB strings.Builder
 	sprf := func(msg string, args ...any) { fprintf(&stackB, msg, args...) }
-	
+
 	for _, cm := range stackedCommits {
 		var cmRef string
 		cmURL := fmt.Sprintf("https://%v/%v/commit/%v", config.git.host, config.git.repo, cm.ShortHash())
@@ -311,7 +313,7 @@ func generateStackInfo(stackedCommits []*Commit, currentCommit *Commit) string {
 		}
 		sprf(" %v\n", cmRef)
 	}
-	
+
 	return stackB.String()
 }
 
@@ -321,15 +323,15 @@ func generateStackInfo(stackedCommits []*Commit, currentCommit *Commit) string {
 func generatePRBody(commit *Commit, existingBody string, stackInfo string) string {
 	// normalize line endings from GitHub (may have \r\n)
 	existingBody = strings.ReplaceAll(existingBody, "\r\n", "\n")
-	
+
 	if commit.Message != "" {
 		// user manages via git commits - override entire PR body
 		return fmt.Sprintf("%s\n\n---\n%s", commit.Message, stackInfo)
 	}
-	
+
 	// user manages via GitHub UI - preserve their edits, only update stack info
 	parts := strings.Split(existingBody, "\n---\n")
-	
+
 	if len(parts) > 1 {
 		lastSection := parts[len(parts)-1]
 		// check if last section is stack info (has bullets with PR numbers)
@@ -342,7 +344,7 @@ func generatePRBody(commit *Commit, existingBody string, stackInfo string) strin
 		// no stack info found in last section, append it
 		return existingBody + "\n\n---\n" + stackInfo
 	}
-	
+
 	// no separator found
 	if existingBody == "" || existingBody == bodyTemplate {
 		// empty or template only, use template
@@ -487,11 +489,13 @@ func runLandCommand() {
 	// parse land-specific flags
 	cfg := landConfig{
 		timeout:       5 * time.Minute, // increased timeout for merge completion
-		pollInterval:  5 * time.Second,  // check more frequently
-		deleteBranch:  true,             // github will handle branch deletion properly
-		requireChecks: false,            // set to false for testing
-		autoMode:      true,             // always use --auto to handle branch protection
+		pollInterval:  5 * time.Second, // check more frequently
+		deleteBranch:  true,            // github will handle branch deletion properly
+		requireChecks: false,           // set to false for testing
+		autoMode:      true,            // always use --auto to handle branch protection
 		dryRun:        config.dryRun,
+		interactive:   true,              // show interactive dashboard
+		mergeStrategy: MergeRequiredOnly, // default to required checks only
 	}
 
 	// run the land operation

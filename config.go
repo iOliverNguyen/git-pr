@@ -102,14 +102,14 @@ Commands:
 
 Common options:`
 		flag.Usage = func() {
-			fmt.Println(usage)
+			printf("%s\n", usage)
 			flag.PrintDefaults()
 		}
 		flag.Parse()
 
 		// handle version flag
 		if *flagVersion {
-			fmt.Printf("git-pr version %s\n", version)
+			printf("git-pr version %s\n", version)
 			os.Exit(0)
 		}
 
@@ -125,7 +125,7 @@ Common options:`
 		config.timeout = time.Duration(*flagTimeout) * time.Second
 		if *flagSetTags != "" {
 			tags := saveGitPRConfig(strings.Split(*flagSetTags, ","))
-			fmt.Printf("Set default tags: %v\n", strings.Join(tags, ", "))
+			printf("Set default tags: %v\n", strings.Join(tags, ", "))
 			os.Exit(0)
 		}
 		config.tags = getGitPRConfig()

@@ -48,7 +48,7 @@ func httpRequest(method string, url string, body any) (_ []byte, err error) {
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Println("failed to call http request:", err)
+		printf("failed to call http request: %v\n", err)
 		return nil, err
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -56,7 +56,7 @@ func httpRequest(method string, url string, body any) (_ []byte, err error) {
 		debugf("%v\n\n", string(data))
 		return data, err
 	}
-	fmt.Println("failed to call http request:", url, resp.Status)
-	fmt.Println(string(data))
+	printf("failed to call http request: %s %s\n", url, resp.Status)
+	printf("%s\n", string(data))
 	return data, errors.New(fmt.Sprintf("failed to call http request: (%v) %s", resp.Status, data))
 }

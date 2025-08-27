@@ -45,7 +45,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 	// checkpoint: validate
 	if config.stopAfter == "validate" {
-		fmt.Println("stopped after: validate")
+		printf("stopped after: validate\n")
 		return
 	}
 
@@ -55,13 +55,13 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		exitf("no commits to submit")
 	}
 	for _, commit := range stackedCommits {
-		fmt.Println(commit)
+		printf("%s\n", commit)
 	}
-	fmt.Println()
+	printf("\n")
 
 	// checkpoint: get-commits
 	if config.stopAfter == "get-commits" {
-		fmt.Println("stopped after: get-commits")
+		printf("stopped after: get-commits\n")
 		return
 	}
 
@@ -83,7 +83,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		remoteRef := fmt.Sprintf("%v/%v", config.gh.user, commitWithoutRemoteRef.ShortHash())
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
-		must(execGit("reword", commitWithoutRemoteRef.Hash, "-m", commitWithoutRemoteRef.FullMessage()))
+		must(git("reword", commitWithoutRemoteRef.Hash, "-m", commitWithoutRemoteRef.FullMessage()))
 
 		time.Sleep(500 * time.Millisecond)
 		stackedCommits = must(getStackedCommits(originMain, head))
@@ -91,7 +91,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 	// checkpoint: rewrite
 	if config.stopAfter == "rewrite" {
-		fmt.Println("stopped after: rewrite")
+		printf("stopped after: rewrite\n")
 		return
 	}
 
@@ -115,7 +115,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			return logs, func() {} // no-op for dry-run
 		}
 		return logs, func() {
-			out := must(execGit("push", "-f", config.Remote, args))
+			out := must(git("push", "-f", config.git.remote, args))
 			time.Sleep(1 * time.Second)
 			if strings.Contains(out, "remote: Create a pull request") {
 				must(0, githubCreatePRForCommit(commit, prevCommit(commit)))
@@ -126,7 +126,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	}
 	// push commits, concurrently
 	if config.dryRun {
-		fmt.Println("[DRY-RUN] Would push commits:")
+		printf("[DRY-RUN] Would push commits:\n")
 	}
 	{
 		var wg sync.WaitGroup
@@ -137,12 +137,12 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			if !shouldPush {
 				commit.Skip = true
 				author := coalesce(commit.AuthorEmail, "@unknown")
-				fmt.Printf("skip \"%v\" (%v)\n", shortenTitle(commit.Title), author)
+				printf("skip \"%v\" (%v)\n", shortenTitle(commit.Title), author)
 				continue
 			}
 			wg.Add(1)
 			logs, execFunc := pushCommit(commit)
-			fmt.Println(logs)
+			printf("%s\n", logs)
 			if !config.dryRun {
 				go func() {
 					defer wg.Done()
@@ -157,7 +157,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 	// checkpoint: push
 	if config.stopAfter == "push" {
-		fmt.Println("stopped after: push")
+		printf("stopped after: push\n")
 		return
 	}
 
@@ -168,16 +168,16 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 	// wait for 5 seconds
 	if !config.dryRun {
-		fmt.Printf("waiting a bit...\n")
+		printf("waiting a bit...\n")
 		time.Sleep(5 * time.Second)
 	}
 
 	// update commits with PR numbers, concurrently
 	if config.dryRun {
-		fmt.Println("[DRY-RUN] Would update PR descriptions for:")
+		printf("[DRY-RUN] Would update PR descriptions for:\n")
 		for _, commit := range stackedCommits {
 			if !commit.Skip {
-				fmt.Printf("  - %s: %s\n", commit.ShortHash(), commit.Title)
+				printf("  - %s: %s\n", commit.ShortHash(), commit.Title)
 			}
 		}
 		return
@@ -207,7 +207,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 	// checkpoint: pr-create
 	if config.stopAfter == "pr-create" {
-		fmt.Println("stopped after: pr-create")
+		printf("stopped after: pr-create\n")
 		return
 	}
 
@@ -221,7 +221,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			wg.Add(1)
 			commit := commit
 			prURL := fmt.Sprintf("https://%v/%v/pull/%v", config.git.host, config.git.repo, commit.PRNumber)
-			fmt.Printf("update pull request %v\n", prURL)
+			printf("update pull request %v\n", prURL)
 			go func() {
 				defer wg.Done()
 

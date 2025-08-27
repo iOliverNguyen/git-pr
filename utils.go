@@ -8,6 +8,23 @@ import (
 	"strings"
 )
 
+var gray = "\033[38;5;245m"
+var reset = "\033[0m"
+var stdout = &wrapWriter{w: os.Stdout, last: '\n'}
+var stderr = &wrapWriter{w: os.Stderr, last: '\n'}
+
+type wrapWriter struct {
+	w    io.Writer
+	last byte
+}
+
+func (w *wrapWriter) Write(p []byte) (n int, err error) {
+	if len(p) > 0 {
+		w.last = p[len(p)-1]
+	}
+	return w.w.Write(p)
+}
+
 func fprint(w io.Writer, args ...any) {
 	_, err := fmt.Fprint(w, args...)
 	if err != nil {
@@ -22,6 +39,18 @@ func fprintf(w io.Writer, format string, args ...any) {
 	}
 }
 
+func printf(format string, args ...any) {
+	fprintf(stdout, format, args...)
+}
+
+func stderrf(format string, args ...any) {
+	if len(args) > 0 {
+		fprintf(stderr, format, args...)
+	} else {
+		fprint(stderr, format)
+	}
+}
+
 func errorf(msg string, args ...any) error {
 	return fmt.Errorf(msg, args...)
 }
@@ -30,20 +59,43 @@ func wrapf(err error, msg string, args ...any) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("%v: %v", fmt.Sprintf(msg, args...), err)
+	return fmt.Errorf("%v: %w", fmt.Sprintf(msg, args...), err)
 }
 
 func debugf(msg string, args ...any) {
-	if config.verbose {
-		fmt.Printf("[DEBUG] "+msg, args...)
+	if !config.verbose {
+		return
 	}
+	if len(args) > 0 {
+		msg = fmt.Sprintf(msg, args...)
+	}
+	if stdout.last != '\n' {
+		printf("\n")
+	}
+	if stderr.last != '\n' {
+		stderrf("\n")
+	}
+	stderrf(gray)
+	for i := strings.Index(msg, "\n"); i >= 0; {
+		stderrf(" │ ")
+		stderrf(msg[:i])
+		stderrf("\n")
+		msg = msg[i+1:]
+		i = strings.Index(msg, "\n")
+	}
+	if msg != "" {
+		stderrf(" │ ")
+		stderrf(msg)
+		stderrf("\n")
+	}
+	stderrf(reset)
 }
 
 func exitf(msg string, args ...any) {
 	msg = trimPrefixNewline(msg)
-	fmt.Printf(msg, args...)
+	stderrf(msg, args...)
 	if !strings.HasSuffix(msg, "\n") {
-		fmt.Println()
+		stderrf("\n")
 	}
 	os.Exit(1)
 }
@@ -57,7 +109,7 @@ func must[T any](v T, err error) T {
 
 func panicf(err error, msg string, args ...any) {
 	if err != nil {
-		fmt.Println("ERROR: ", err)
+		stderrf("ERROR: %v\n", err)
 	}
 	panic("ERROR: " + fmt.Sprintf(msg, args...))
 }

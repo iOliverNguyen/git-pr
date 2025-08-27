@@ -113,7 +113,7 @@ func (commit *Commit) FullMessage() string {
 		fprintf(&b, format, formatKey(kv[0]), kv[1])
 	}
 	if config.verbose {
-		fmt.Println("\n" + b.String() + "\n")
+		printf("\n%s\n\n", b.String())
 	}
 	return strings.TrimSpace(b.String())
 }

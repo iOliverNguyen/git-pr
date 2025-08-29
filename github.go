@@ -40,7 +40,7 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 	var out []PR
 	err = json.Unmarshal(jsonBody, &out)
 	if err != nil {
-		return 0, errorf("failed to parse request body: %v", err)
+		return 0, errorf("failed to parse request body: %w", err)
 	}
 
 	remoteRef := commit.GetRemoteRef()
@@ -73,7 +73,7 @@ func githubGetPRByNumber(number int) (*PR, error) {
 	var out PR
 	err = json.Unmarshal(jsonBody, &out)
 	if err != nil {
-		return nil, errorf("failed to parse request body: %v", err)
+		return nil, errorf("failed to parse request body: %w", err)
 	}
 
 	return &out, nil

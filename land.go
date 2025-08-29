@@ -58,18 +58,40 @@ type prInfo struct {
 	// dashboard fields
 	Mergeable      string        // MERGEABLE, CONFLICTING, UNKNOWN (from mergeable field)
 	MergeStatus    string        // CLEAN, UNSTABLE, BLOCKED, etc. (from mergeStateStatus)
-	ChecksStatus   string        // PENDING, PASSING, FAILING
-	Checks         []checkStatus // detailed check info
+	Checks         []checkStatus // detailed check info (ChecksStatus is derived from this)
 	State          string        // OPEN, MERGED, CLOSED
 	ReviewDecision string        // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED
 	ReviewStatus   string        // summary of review states
 	LastUpdated    time.Time     // when status was last fetched
 }
 
+// GetChecksStatus derives the checks status from the individual checks
+func (pr *prInfo) GetChecksStatus() string {
+	if len(pr.Checks) == 0 {
+		return ""
+	}
+	
+	// check if any are failing
+	for _, check := range pr.Checks {
+		if check.State == "FAILURE" || check.State == "ERROR" {
+			return "FAILING"
+		}
+	}
+	
+	// check if any are pending
+	for _, check := range pr.Checks {
+		if check.State == "PENDING" || check.State == "IN_PROGRESS" || check.State == "QUEUED" {
+			return "PENDING"
+		}
+	}
+	
+	// all passed
+	return "PASSING"
+}
+
 // dashboardState holds the state of the interactive dashboard
 type dashboardState struct {
 	prs           []prInfo
-	currentPR     int
 	mergeStrategy MergeStrategy
 	autoRetry     bool
 	pauseOnFail   bool
@@ -264,7 +286,7 @@ func landStack(cfg landConfig) error {
 			// delete the merged branch after updating dependent PRs
 			if cfg.deleteBranch && pr.HeadBranch != "" {
 				printf("  ⠼ Deleting branch %s...", pr.HeadBranch)
-				if err := deleteRemoteBranch(pr.HeadBranch); err != nil {
+				if err := deleteRemoteBranch(pr.HeadBranch, false); err != nil {
 					// not fatal, just warn
 					printf("\r  ⚠ Could not delete branch: %v\n", err)
 				} else {
@@ -299,7 +321,6 @@ func landStack(cfg landConfig) error {
 func landStackInteractive(prs []prInfo, cfg landConfig) error {
 	state := &dashboardState{
 		prs:           prs,
-		currentPR:     0,
 		mergeStrategy: cfg.mergeStrategy,
 		autoRetry:     cfg.autoRetry,
 		pauseOnFail:   cfg.pauseOnFail,
@@ -428,13 +449,13 @@ func showDashboard(state *dashboardState) {
 				}
 				printf("      %s %s\n", checkIcon, check.Name)
 			}
-		} else if pr.ChecksStatus != "NONE" && pr.ChecksStatus != "" {
+		} else if pr.GetChecksStatus() != "NONE" && pr.GetChecksStatus() != "" {
 			// fallback to summary if no detailed checks
-			if pr.ChecksStatus == "FAILING" {
+			if pr.GetChecksStatus() == "FAILING" {
 				printf("    ❌ Checks failing\n")
-			} else if pr.ChecksStatus == "PENDING" {
+			} else if pr.GetChecksStatus() == "PENDING" {
 				printf("    ⏳ Checks pending\n")
-			} else if pr.ChecksStatus == "PASSING" {
+			} else if pr.GetChecksStatus() == "PASSING" {
 				printf("    ✅ All checks passed\n")
 			}
 		}
@@ -678,16 +699,7 @@ func updatePRStatusBatch(prs []prInfo) error {
 				prs[i].Checks = append(prs[i].Checks, cs)
 			}
 
-			// set overall check status
-			if failing > 0 {
-				prs[i].ChecksStatus = "FAILING"
-			} else if pending > 0 {
-				prs[i].ChecksStatus = "PENDING"
-			} else if passing > 0 {
-				prs[i].ChecksStatus = "PASSING"
-			} else {
-				prs[i].ChecksStatus = "NONE"
-			}
+			// GetChecksStatus() will derive the status from pr.Checks
 		}
 	}
 
@@ -725,7 +737,7 @@ func updatePRStatus(pr *prInfo) error {
 
 	// determine checks status
 	if len(data.StatusCheckRollup) == 0 {
-		pr.ChecksStatus = "NONE"
+		// no checks - GetChecksStatus() will return ""
 	} else {
 		passing := 0
 		failing := 0
@@ -742,13 +754,7 @@ func updatePRStatus(pr *prInfo) error {
 			}
 		}
 
-		if failing > 0 {
-			pr.ChecksStatus = "FAILING"
-		} else if pending > 0 {
-			pr.ChecksStatus = "PENDING"
-		} else {
-			pr.ChecksStatus = "PASSING"
-		}
+		// GetChecksStatus() derives status from pr.Checks automatically
 	}
 
 	// fetch detailed checks
@@ -810,7 +816,7 @@ func getPRStatusIcon(pr prInfo) string {
 }
 
 func getChecksIcon(pr prInfo) string {
-	switch pr.ChecksStatus {
+	switch pr.GetChecksStatus() {
 	case "PASSING":
 		return "✅"
 	case "FAILING":
@@ -840,7 +846,11 @@ func allPRsMerged(state *dashboardState) bool {
 
 // landStackFromDashboard starts the landing process from the dashboard
 func landStackFromDashboard(state *dashboardState, cfg landConfig) error {
-	printf("\n🚀 Starting landing process...")
+	if cfg.dryRun {
+		printf("\n🚀 [DRY-RUN] Starting landing process simulation...")
+	} else {
+		printf("\n🚀 Starting landing process...")
+	}
 
 	// use the existing landing logic but with the PR info we already have
 	for i, pr := range state.prs {
@@ -852,6 +862,11 @@ func landStackFromDashboard(state *dashboardState, cfg landConfig) error {
 
 		printf("\n[%d/%d] Landing PR #%d: %s\n", i+1, len(state.prs), pr.Number, pr.Title)
 		printf("  URL: %s\n", pr.URL)
+		
+		if cfg.dryRun {
+			printf("  [DRY-RUN] Would land PR #%d\n", pr.Number)
+			continue
+		}
 
 		// verify commit matches remote before landing
 		needsRebase, err := verifyAndSyncCommit(&pr, i == 0)
@@ -895,98 +910,19 @@ func landStackFromDashboard(state *dashboardState, cfg landConfig) error {
 		}
 
 		// merge the PR
-		printf("  ⠼ Merging PR...")
-		output, err := mergePR(pr.Number, pr.Title, pr.HeadSHA, cfg)
-
-		// check if auto-merge failed due to not being configured
-		if err != nil && strings.Contains(output, "enablePullRequestAutoMerge") {
-			debugf("auto-merge not enabled for repo, falling back to immediate merge")
-			// retry without --auto flag
-			cfg.autoMode = false
-			output, err = mergePR(pr.Number, pr.Title, pr.HeadSHA, cfg)
-			cfg.autoMode = true // restore for next PR
-		}
-
-		if err != nil {
-			printf("\r  ❌ Failed to merge PR #%d: %v\n", pr.Number, err)
-			return errorf("failed to merge PR #%d: %w", pr.Number, err)
-		}
-
-		// if we used auto mode, wait for merge to complete
-		if cfg.autoMode {
-			printf("\r  ✓ Merge queued with --auto\n")
-			printf("  ⠼ Waiting for merge to complete...")
-			if err := waitForMerge(pr.Number, pr.URL, cfg); err != nil {
-				printf("\r  ❌ Failed waiting for PR #%d to merge: %v\n", pr.Number, err)
-				return errorf("failed waiting for PR #%d to merge: %w", pr.Number, err)
-			}
-			printf("\r  ✓ Merged to %s                    \n", config.git.remoteTrunk)
-		} else {
-			printf("\r  ✓ Merged to %s\n", config.git.remoteTrunk)
+		if err := executePRMerge(&pr, cfg); err != nil {
+			return err
 		}
 
 		// update next PR's base AFTER merge completes
 		if i < len(state.prs)-1 {
-			nextPR := state.prs[i+1]
-			printf("  ⠼ Updating next PR #%d base to %s...", nextPR.Number, config.git.remoteTrunk)
-			if err := updatePRBase(nextPR.Number, config.git.remoteTrunk); err != nil {
-				// check if PR was closed
-				if strings.Contains(err.Error(), "closed") {
-					printf("\r  ❌ PR #%d was closed, cannot update base\n", nextPR.Number)
-					return errorf("PR #%d was closed, cannot update base: %w", nextPR.Number, err)
-				}
-				// other errors might be recoverable
-				printf("\r  ⚠ Could not update PR #%d base: %v\n", nextPR.Number, err)
-			} else {
-				printf("\r  ✓ Updated PR #%d base                      \n", nextPR.Number)
-				// wait for GitHub to process the base change
-				time.Sleep(2 * time.Second)
-
-				// check if the PR now has conflicts after base update
-				hasConflicts, err := checkPRConflicts(nextPR.Number)
-				if err != nil {
-					printf("  ⚠ Could not check conflicts for PR #%d: %v\n", nextPR.Number, err)
-				} else if hasConflicts {
-					printf("  ⚠ PR #%d has conflicts after base update\n", nextPR.Number)
-
-					// get all remaining PRs that need rebasing
-					remainingPRs := state.prs[i+1:]
-
-					// attempt to rebase all remaining PRs
-					if err := rebaseRemainingPRs(remainingPRs); err != nil {
-						printf("  ❌ Failed to rebase remaining PRs: %v\n", err)
-						printf("  💡 Manual intervention required. Please resolve conflicts at:\n")
-						for _, rpr := range remainingPRs {
-							printf("     - PR #%d: %s\n", rpr.Number, rpr.URL)
-						}
-						return errorf("conflicts detected after base update, manual resolution required")
-					}
-
-					// verify conflicts are resolved
-					hasConflicts, err = checkPRConflicts(nextPR.Number)
-					if err != nil {
-						printf("  ⚠ Could not verify conflict resolution: %v\n", err)
-					} else if hasConflicts {
-						printf("  ❌ PR #%d still has conflicts after rebase\n", nextPR.Number)
-						return errorf("PR #%d still has conflicts after rebase", nextPR.Number)
-					} else {
-						printf("  ✓ Conflicts resolved for remaining PRs\n")
-					}
-				}
+			if err := updateNextPRBaseAndCheckConflicts(i, state.prs); err != nil {
+				return err
 			}
 		}
 
 		// delete the merged branch after updating dependent PRs
-		if cfg.deleteBranch && pr.HeadBranch != "" {
-			printf("  ⠼ Deleting branch %s...", pr.HeadBranch)
-			if err := deleteRemoteBranch(pr.HeadBranch); err != nil {
-				// real error occurred (not just "already deleted")
-				printf("\r  ⚠ Could not delete branch: %v\n", err)
-			} else {
-				// successfully deleted or was already deleted
-				printf("\r  ✓ Deleted branch %s                    \n", pr.HeadBranch)
-			}
-		}
+		deleteMergedBranch(pr, cfg)
 
 		// pull latest main
 		printf("  ⠼ Pulling latest %s...", config.git.remoteTrunk)
@@ -997,42 +933,20 @@ func landStackFromDashboard(state *dashboardState, cfg landConfig) error {
 
 		// rebase remaining commits onto updated main and checkout the last commit
 		if i < len(state.prs)-1 {
-			// there are more PRs to land
 			remainingPRs := state.prs[i+1:]
-			lastPR := remainingPRs[len(remainingPRs)-1]
-
-			printf("  ⠼ Rebasing remaining commits onto %s...", config.git.remoteTrunk)
-
-			// checkout the branch of the last PR in the stack
-			if _, err := git("checkout", lastPR.HeadBranch); err != nil {
-				printf("\r  ⚠ Could not checkout branch %s: %v\n", lastPR.HeadBranch, err)
-			} else {
-				// rebase onto the updated main
-				if _, err := git("rebase", config.git.remoteTrunk); err != nil {
-					printf("\r  ❌ Failed to rebase: %v\n", err)
-					printf("  💡 Please resolve conflicts manually and run 'git-pr land' again\n")
-					return errorf("failed to rebase remaining commits: %w", err)
-				}
-				printf("\r  ✓ Rebased remaining commits onto %s\n", config.git.remoteTrunk)
-
-				// force push the rebased commits
-				printf("  ⠼ Pushing rebased commits...")
-				for _, rpr := range remainingPRs {
-					if _, err := git("push", "--force-with-lease", config.git.remote, rpr.HeadBranch); err != nil {
-						printf("\r  ⚠ Failed to push branch %s: %v\n", rpr.HeadBranch, err)
-					}
-				}
-				printf("\r  ✓ Pushed rebased commits        \n")
-
-				// stay on the last branch for the next iteration
-				printf("  ✓ Checked out %s\n", lastPR.HeadBranch)
+			if err := rebaseAndPushRemainingCommits(remainingPRs); err != nil {
+				return err
 			}
 		}
 
 		printf("  ✓ PR #%d successfully landed\n", pr.Number)
 	}
 
-	printf("\n✓ Successfully landed %d PRs\n", len(state.prs))
+	if cfg.dryRun {
+		printf("\n✓ [DRY-RUN] Would have landed %d PRs\n", len(state.prs))
+	} else {
+		printf("\n✓ Successfully landed %d PRs\n", len(state.prs))
+	}
 	return nil
 }
 
@@ -1106,7 +1020,7 @@ func detectAutoGeneratedCommits(prNumber int) (string, bool) {
 	var prData struct {
 		HeadRefOid string `json:"headRefOid"`
 	}
-	json.Unmarshal([]byte(output), &prData)
+	parsePRFields(output, &prData)
 
 	debugf("current head SHA for PR #%d: %s", prNumber, prData.HeadRefOid[:8])
 
@@ -1447,19 +1361,65 @@ func updatePRBase(prNumber int, newBase string) error {
 	return err
 }
 
-// deleteRemoteBranch deletes a remote branch
-func deleteRemoteBranch(branchName string) error {
+// deleteRemoteBranch deletes a remote branch with optional progress display
+func deleteRemoteBranch(branchName string, showProgress bool) error {
+	if showProgress {
+		printf("  ⠼ Deleting branch %s...", branchName)
+	}
+	
 	_, err := git("push", config.git.remote, "--delete", branchName)
 	if err != nil {
 		// check if the error is because the branch doesn't exist (already deleted)
 		errStr := err.Error()
+		// More robust checks for "branch already deleted" scenarios
 		if strings.Contains(errStr, "remote ref does not exist") ||
-			strings.Contains(errStr, "unable to delete") {
-			// branch is already deleted, that's fine - return nil
+			strings.Contains(errStr, "unable to delete") ||
+			strings.Contains(errStr, "not found") ||
+			strings.Contains(errStr, "does not exist") {
+			// branch is already deleted, that's fine
+			if showProgress {
+				printf("\r  ✓ Branch %s already deleted                    \n", branchName)
+			}
 			return nil
 		}
+		// real error occurred
+		if showProgress {
+			printf("\r  ⚠ Could not delete branch: %v\n", err)
+		}
+		return err
 	}
-	return err
+	
+	// successfully deleted
+	if showProgress {
+		printf("\r  ✓ Deleted branch %s                    \n", branchName)
+	}
+	return nil
+}
+
+// dryRunGit executes git commands respecting the dry-run flag
+func dryRunGit(cfg landConfig, args ...string) (string, error) {
+	if cfg.dryRun {
+		printf("  [DRY-RUN] Would execute: git %s\n", strings.Join(args, " "))
+		return "", nil
+	}
+	return git(args...)
+}
+
+// dryRunGH executes gh commands respecting the dry-run flag
+func dryRunGH(cfg landConfig, args ...string) (string, error) {
+	if cfg.dryRun {
+		printf("  [DRY-RUN] Would execute: gh %s\n", strings.Join(args, " "))
+		return "", nil
+	}
+	return gh(args...)
+}
+
+// parsePRFields is a helper to parse JSON output from gh pr view commands
+func parsePRFields(output string, target interface{}) error {
+	if err := json.Unmarshal([]byte(output), target); err != nil {
+		return errorf("failed to parse PR fields: %w", err)
+	}
+	return nil
 }
 
 // checkPRConflicts quickly checks if a PR has conflicts
@@ -1474,7 +1434,7 @@ func checkPRConflicts(prNumber int) (bool, error) {
 		Mergeable        string `json:"mergeable"`
 		MergeStateStatus string `json:"mergeStateStatus"`
 	}
-	if err := json.Unmarshal([]byte(output), &prData); err != nil {
+	if err := parsePRFields(output, &prData); err != nil {
 		return false, err
 	}
 
@@ -1486,6 +1446,61 @@ func checkPRConflicts(prNumber int) (bool, error) {
 		prNumber, prData.Mergeable, prData.MergeStateStatus, hasConflicts)
 
 	return hasConflicts, nil
+}
+
+// findLocalCommitByRemoteRef finds the local commit with the given Remote-Ref
+func findLocalCommitByRemoteRef(remoteRef string) (*Commit, error) {
+	originMain := fmt.Sprintf("%s/%s", config.git.remote, config.git.remoteTrunk)
+	stackedCommits, err := getStackedCommits(originMain, "HEAD")
+	if err != nil {
+		debugf("could not get stacked commits: %v", err)
+		return nil, err
+	}
+	
+	for _, commit := range stackedCommits {
+		if commit.GetRemoteRef() == remoteRef {
+			debugf("found local commit %s with Remote-Ref: %s", commit.ShortHash(), remoteRef)
+			return commit, nil
+		}
+	}
+	
+	return nil, nil // no matching commit found
+}
+
+// checkCommitMatchInPR checks if the local commit SHA matches any commit in the remote PR
+func checkCommitMatchInPR(localSHA string, remoteSHAs []string, prNumber int) bool {
+	for i, remoteSHA := range remoteSHAs {
+		debugf("PR #%d - checking commit %d/%d: local %s vs remote %s",
+			prNumber, i+1, len(remoteSHAs), localSHA[:8], remoteSHA[:8])
+		
+		if strings.HasPrefix(remoteSHA, localSHA[:8]) || strings.HasPrefix(localSHA, remoteSHA[:8]) {
+			debugf("found matching commit at position %d for PR #%d", i+1, prNumber)
+			return true
+		}
+	}
+	return false
+}
+
+// displayCommitMismatch shows the commit mismatch information to the user
+func displayCommitMismatch(pr *prInfo, localCommit *Commit, remoteSHAs []string, remoteRef string) {
+	printf("\n  ⚠ Commit mismatch detected for PR #%d\n", pr.Number)
+	printf("    Local commit with Remote-Ref '%s':\n", remoteRef)
+	printf("      %s %s\n", localCommit.Hash[:8], localCommit.Title)
+	printf("    Remote PR has %d commit(s):\n", len(remoteSHAs))
+	
+	// show first few remote commits to help identify the issue
+	showCount := len(remoteSHAs)
+	if showCount > 3 {
+		showCount = 3
+	}
+	for i := 0; i < showCount; i++ {
+		commitInfo, _ := git("log", "--format=%h %s", "-n", "1", remoteSHAs[i])
+		commitInfo = strings.TrimSpace(commitInfo)
+		printf("      %d. %s\n", i+1, commitInfo)
+	}
+	if len(remoteSHAs) > 3 {
+		printf("      ... and %d more\n", len(remoteSHAs)-3)
+	}
 }
 
 // verifyAndSyncCommit verifies that the local commit matches the remote PR and syncs if needed
@@ -1501,7 +1516,7 @@ func verifyAndSyncCommit(pr *prInfo, isFirst bool) (bool, error) {
 	var prBranchData struct {
 		HeadRefName string `json:"headRefName"`
 	}
-	if err := json.Unmarshal([]byte(prOutput), &prBranchData); err != nil {
+	if err := parsePRFields(prOutput, &prBranchData); err != nil {
 		return false, err
 	}
 
@@ -1510,23 +1525,11 @@ func verifyAndSyncCommit(pr *prInfo, isFirst bool) (bool, error) {
 	debugf("PR #%d has Remote-Ref (branch): %s", pr.Number, remoteRef)
 
 	// find the local commit that has this Remote-Ref
-	// we need to search through all stacked commits to find the one with matching Remote-Ref
-	originMain := fmt.Sprintf("%s/%s", config.git.remote, config.git.remoteTrunk)
-	stackedCommits, err := getStackedCommits(originMain, "HEAD")
+	localCommit, err := findLocalCommitByRemoteRef(remoteRef)
 	if err != nil {
-		debugf("could not get stacked commits: %v", err)
 		return false, nil
 	}
-
-	var localCommit *Commit
-	for _, commit := range stackedCommits {
-		if commit.GetRemoteRef() == remoteRef {
-			localCommit = commit
-			debugf("found local commit %s with Remote-Ref: %s", commit.ShortHash(), remoteRef)
-			break
-		}
-	}
-
+	
 	if localCommit == nil {
 		debugf("no local commit found with Remote-Ref: %s", remoteRef)
 		// this PR doesn't have a corresponding local commit
@@ -1540,6 +1543,7 @@ func verifyAndSyncCommit(pr *prInfo, isFirst bool) (bool, error) {
 
 	// get the first commit on the remote PR branch (not HEAD, which might have CI commits)
 	remoteBranch := fmt.Sprintf("%s/%s", config.git.remote, remoteRef)
+	originMain := fmt.Sprintf("%s/%s", config.git.remote, config.git.remoteTrunk)
 	remoteCommits, err := git("rev-list", "--reverse", fmt.Sprintf("%s..%s", originMain, remoteBranch))
 	if err != nil {
 		debugf("could not get remote commits: %v", err)
@@ -1553,23 +1557,9 @@ func verifyAndSyncCommit(pr *prInfo, isFirst bool) (bool, error) {
 	}
 
 	localSHA := localCommit.Hash
-
-	// check if the local commit matches ANY commit in the PR (not just the first)
-	// this handles cases where the PR has multiple commits (e.g., previously merged commits + new commit)
-	commitFound := false
-	for i, remoteSHA := range remoteSHAs {
-		debugf("PR #%d - checking commit %d/%d: local %s vs remote %s",
-			pr.Number, i+1, len(remoteSHAs), localSHA[:8], remoteSHA[:8])
-
-		if strings.HasPrefix(remoteSHA, localSHA[:8]) || strings.HasPrefix(localSHA, remoteSHA[:8]) {
-			commitFound = true
-			debugf("found matching commit at position %d for PR #%d", i+1, pr.Number)
-			break
-		}
-	}
-
-	// check if commits match
-	if commitFound {
+	
+	// check if the local commit matches ANY commit in the PR
+	if checkCommitMatchInPR(localSHA, remoteSHAs, pr.Number) {
 		debugf("commits match for PR #%d", pr.Number)
 
 		// update HeadSHA to the actual remote HEAD (in case there are CI commits)
@@ -1587,25 +1577,7 @@ func verifyAndSyncCommit(pr *prInfo, isFirst bool) (bool, error) {
 	}
 
 	// commits don't match - need to sync
-	// show all remote commits to help user understand the mismatch
-	printf("\n  ⚠ Commit mismatch detected for PR #%d\n", pr.Number)
-	printf("    Local commit with Remote-Ref '%s':\n", remoteRef)
-	printf("      %s %s\n", localSHA[:8], localCommit.Title)
-	printf("    Remote PR has %d commit(s):\n", len(remoteSHAs))
-
-	// show first few remote commits to help identify the issue
-	showCount := len(remoteSHAs)
-	if showCount > 3 {
-		showCount = 3
-	}
-	for i := 0; i < showCount; i++ {
-		commitInfo, _ := git("log", "--format=%h %s", "-n", "1", remoteSHAs[i])
-		commitInfo = strings.TrimSpace(commitInfo)
-		printf("      %d. %s\n", i+1, commitInfo)
-	}
-	if len(remoteSHAs) > 3 {
-		printf("      ... and %d more\n", len(remoteSHAs)-3)
-	}
+	displayCommitMismatch(pr, localCommit, remoteSHAs, remoteRef)
 
 	printf("\n  This PR needs to be synced with your local changes.\n")
 	printf("  Would you like to pull, rebase, and push? ([y]es/[n]o): ")
@@ -1649,6 +1621,7 @@ func verifyAndSyncCommit(pr *prInfo, isFirst bool) (bool, error) {
 
 	// rebase onto latest main
 	printf("    ⠼ Rebasing onto %s...", config.git.remoteTrunk)
+	originMain = fmt.Sprintf("%s/%s", config.git.remote, config.git.remoteTrunk)
 	output, err := git("rebase", originMain)
 	if err != nil {
 		if strings.Contains(output, "CONFLICT") || strings.Contains(err.Error(), "conflict") {
@@ -1679,7 +1652,7 @@ func verifyAndSyncCommit(pr *prInfo, isFirst bool) (bool, error) {
 		var prData struct {
 			HeadRefOid string `json:"headRefOid"`
 		}
-		if err := json.Unmarshal([]byte(output), &prData); err == nil {
+		if err := parsePRFields(output, &prData); err == nil {
 			pr.HeadSHA = prData.HeadRefOid
 			debugf("updated PR #%d HeadSHA to %s after sync", pr.Number, pr.HeadSHA[:8])
 		}
@@ -1816,7 +1789,172 @@ func checkAndConfirmLocalChanges(firstCommit *Commit, allCommits []*Commit) erro
 	return nil
 }
 
-// rebaseRemainingPRs rebases all remaining PRs onto the latest main branch
+// deleteMergedBranch deletes the remote branch of a merged PR
+func deleteMergedBranch(pr prInfo, cfg landConfig) {
+	if !cfg.deleteBranch || pr.HeadBranch == "" {
+		return
+	}
+	// Use the consolidated function with progress display
+	deleteRemoteBranch(pr.HeadBranch, true)
+}
+
+// updateNextPRBaseAndCheckConflicts updates the next PR's base and handles conflicts
+func updateNextPRBaseAndCheckConflicts(currentIndex int, prs []prInfo) error {
+	nextPR := prs[currentIndex+1]
+	printf("  ⠼ Updating next PR #%d base to %s...", nextPR.Number, config.git.remoteTrunk)
+	
+	if err := updatePRBase(nextPR.Number, config.git.remoteTrunk); err != nil {
+		// check if PR was closed
+		if strings.Contains(err.Error(), "closed") {
+			printf("\r  ❌ PR #%d was closed, cannot update base\n", nextPR.Number)
+			return errorf("PR #%d was closed, cannot update base: %w", nextPR.Number, err)
+		}
+		// other errors might be recoverable
+		printf("\r  ⚠ Could not update PR #%d base: %v\n", nextPR.Number, err)
+	} else {
+		printf("\r  ✓ Updated PR #%d base                      \n", nextPR.Number)
+		// wait for GitHub to process the base change
+		time.Sleep(2 * time.Second)
+
+		// check if the PR now has conflicts after base update
+		hasConflicts, err := checkPRConflicts(nextPR.Number)
+		if err != nil {
+			printf("  ⚠ Could not check conflicts for PR #%d: %v\n", nextPR.Number, err)
+		} else if hasConflicts {
+			printf("  ⚠ PR #%d has conflicts after base update\n", nextPR.Number)
+
+			// get all remaining PRs that need rebasing
+			remainingPRs := prs[currentIndex+1:]
+
+			// attempt to rebase all remaining PRs
+			if err := rebaseRemainingPRs(remainingPRs); err != nil {
+				printf("  ❌ Failed to rebase remaining PRs: %v\n", err)
+				printf("  💡 Manual intervention required. Please resolve conflicts at:\n")
+				for _, rpr := range remainingPRs {
+					printf("     - PR #%d: %s\n", rpr.Number, rpr.URL)
+				}
+				return errorf("conflicts detected after base update, manual resolution required")
+			}
+
+			// verify conflicts are resolved
+			hasConflicts, err = checkPRConflicts(nextPR.Number)
+			if err != nil {
+				printf("  ⚠ Could not verify conflict resolution: %v\n", err)
+			} else if hasConflicts {
+				printf("  ❌ PR #%d still has conflicts after rebase\n", nextPR.Number)
+				return errorf("PR #%d still has conflicts after rebase", nextPR.Number)
+			} else {
+				printf("  ✓ Conflicts resolved for remaining PRs\n")
+			}
+		}
+	}
+	
+	return nil
+}
+
+// executePRMerge handles the PR merge process including auto-merge fallback
+func executePRMerge(pr *prInfo, cfg landConfig) error {
+	printf("  ⠼ Merging PR...")
+	output, err := mergePR(pr.Number, pr.Title, pr.HeadSHA, cfg)
+
+	// check if auto-merge failed due to not being configured
+	if err != nil && strings.Contains(output, "enablePullRequestAutoMerge") {
+		debugf("auto-merge not enabled for repo, falling back to immediate merge")
+		// retry without --auto flag
+		cfg.autoMode = false
+		output, err = mergePR(pr.Number, pr.Title, pr.HeadSHA, cfg)
+		cfg.autoMode = true // restore for next PR
+	}
+
+	if err != nil {
+		printf("\r  ❌ Failed to merge PR #%d: %v\n", pr.Number, err)
+		return errorf("failed to merge PR #%d: %w", pr.Number, err)
+	}
+
+	// if we used auto mode, wait for merge to complete
+	if cfg.autoMode {
+		printf("\r  ✓ Merge queued with --auto\n")
+		printf("  ⠼ Waiting for merge to complete...")
+		if err := waitForMerge(pr.Number, pr.URL, cfg); err != nil {
+			printf("\r  ❌ Failed waiting for PR #%d to merge: %v\n", pr.Number, err)
+			return errorf("failed waiting for PR #%d to merge: %w", pr.Number, err)
+		}
+		printf("\r  ✓ Merged to %s                    \n", config.git.remoteTrunk)
+	} else {
+		printf("\r  ✓ Merged to %s\n", config.git.remoteTrunk)
+	}
+	
+	return nil
+}
+
+// rebaseAndPushRemainingCommits rebases remaining commits onto main and pushes them
+// This is a simplified version for post-merge rebasing
+func rebaseAndPushRemainingCommits(remainingPRs []prInfo) error {
+	if len(remainingPRs) == 0 {
+		return nil
+	}
+
+	lastPR := remainingPRs[len(remainingPRs)-1]
+	
+	printf("  ⠼ Rebasing remaining commits onto %s...", config.git.remoteTrunk)
+	
+	// fetch the remote branch to get the latest commit
+	remoteBranch := fmt.Sprintf("%s/%s", config.git.remote, lastPR.HeadBranch)
+	if _, err := git("fetch", config.git.remote, lastPR.HeadBranch); err != nil {
+		debugf("could not fetch branch %s: %v", lastPR.HeadBranch, err)
+	}
+	
+	// checkout the commit directly (not the branch)
+	if _, err := git("checkout", remoteBranch); err != nil {
+		printf("\r  ⚠ Could not checkout %s: %v\n", remoteBranch, err)
+		return nil // non-fatal, continue
+	}
+	
+	// rebase onto the updated main
+	originMain := fmt.Sprintf("%s/%s", config.git.remote, config.git.remoteTrunk)
+	if _, err := git("rebase", originMain); err != nil {
+		printf("\r  ❌ Failed to rebase: %v\n", err)
+		printf("  💡 Please resolve conflicts manually and run 'git-pr land' again\n")
+		return errorf("failed to rebase remaining commits: %w", err)
+	}
+	printf("\r  ✓ Rebased remaining commits onto %s\n", config.git.remoteTrunk)
+	
+	// push the rebased commits to their remote branches
+	printf("  ⠼ Pushing rebased commits...")
+	
+	// We're currently on the last PR's commit after rebase
+	// Need to push commits from last to first (reverse order)
+	hasErrors := false
+	for i := len(remainingPRs) - 1; i >= 0; i-- {
+		rpr := remainingPRs[i]
+		// push current HEAD to the remote branch
+		if _, err := git("push", "--force-with-lease", config.git.remote, fmt.Sprintf("HEAD:%s", rpr.HeadBranch)); err != nil {
+			printf("\r  ⚠ Failed to push to branch %s: %v\n", rpr.HeadBranch, err)
+			hasErrors = true
+		}
+		// move to the parent commit for the next PR (going backwards through the stack)
+		if i > 0 {
+			if _, err := git("reset", "--hard", "HEAD~1"); err != nil {
+				debugf("failed to move to parent commit: %v", err)
+				break
+			}
+		}
+	}
+	
+	// we're already in a detached HEAD state at the right commit, no need to checkout
+	
+	if hasErrors {
+		printf("\r  ⚠ Some branches failed to push (see warnings above)\n")
+	} else {
+		printf("\r  ✓ Pushed rebased commits        \n")
+	}
+	
+	// stay on the current commit
+	printf("  ✓ Ready for next iteration\n")
+	return nil
+}
+
+// rebaseRemainingPRs rebases all remaining PRs onto the latest main branch with full conflict handling
 func rebaseRemainingPRs(remainingPRs []prInfo) error {
 	printf("\n  🔄 Rebasing remaining PRs onto %s...\n", config.git.remoteTrunk)
 
@@ -1862,23 +2000,11 @@ func rebaseRemainingPRs(remainingPRs []prInfo) error {
 			debugf("could not fetch branch %s: %v", pr.HeadBranch, err)
 		}
 
-		// check if local branch exists
-		localBranches, _ := git("branch", "--list", pr.HeadBranch)
-		branchExists := strings.Contains(localBranches, pr.HeadBranch)
-
-		if branchExists {
-			// checkout existing branch
-			if _, err := git("checkout", pr.HeadBranch); err != nil {
-				printf("\r    ❌ Failed to checkout branch %s\n", pr.HeadBranch)
-				return errorf("failed to checkout branch %s: %w", pr.HeadBranch, err)
-			}
-		} else {
-			// create and checkout branch from remote
-			remoteBranch := fmt.Sprintf("%s/%s", config.git.remote, pr.HeadBranch)
-			if _, err := git("checkout", "-b", pr.HeadBranch, remoteBranch); err != nil {
-				printf("\r    ❌ Failed to create branch %s\n", pr.HeadBranch)
-				return errorf("failed to create branch %s from %s: %w", pr.HeadBranch, remoteBranch, err)
-			}
+		// checkout the remote branch directly (detached HEAD)
+		remoteBranch := fmt.Sprintf("%s/%s", config.git.remote, pr.HeadBranch)
+		if _, err := git("checkout", remoteBranch); err != nil {
+			printf("\r    ❌ Failed to checkout %s\n", remoteBranch)
+			return errorf("failed to checkout %s: %w", remoteBranch, err)
 		}
 
 		// attempt rebase onto main
@@ -1893,10 +2019,11 @@ func rebaseRemainingPRs(remainingPRs []prInfo) error {
 
 				// provide helpful message
 				printf("    💡 To resolve manually:\n")
-				printf("       git checkout %s\n", pr.HeadBranch)
+				printf("       git fetch %s %s\n", config.git.remote, pr.HeadBranch)
+				printf("       git checkout %s/%s\n", config.git.remote, pr.HeadBranch)
 				printf("       git rebase %s\n", originMain)
 				printf("       # resolve conflicts\n")
-				printf("       git push -f %s %s\n", config.git.remote, pr.HeadBranch)
+				printf("       git push -f %s HEAD:%s\n", config.git.remote, pr.HeadBranch)
 
 				return errorf("rebase conflicts detected for PR #%d, manual intervention required", pr.Number)
 			}
@@ -1904,9 +2031,9 @@ func rebaseRemainingPRs(remainingPRs []prInfo) error {
 			return errorf("failed to rebase PR #%d: %w", pr.Number, err)
 		}
 
-		// force push the rebased branch
+		// force push the rebased commit to the remote branch
 		printf("\r    ⠼ Pushing rebased PR #%d...", pr.Number)
-		if _, err := git("push", "-f", config.git.remote, pr.HeadBranch); err != nil {
+		if _, err := git("push", "-f", config.git.remote, fmt.Sprintf("HEAD:%s", pr.HeadBranch)); err != nil {
 			printf("\r    ❌ Failed to push PR #%d\n", pr.Number)
 			return errorf("failed to push rebased branch for PR #%d: %w", pr.Number, err)
 		}
@@ -1914,24 +2041,12 @@ func rebaseRemainingPRs(remainingPRs []prInfo) error {
 		printf("\r    ✓ Rebased PR #%d (%d/%d)\n", pr.Number, i+1, len(remainingPRs))
 	}
 
-	// checkout the last rebased PR's branch to ensure we're on the latest commit
+	// stay in detached HEAD at the last rebased commit
 	if len(remainingPRs) > 0 {
-		lastPR := remainingPRs[len(remainingPRs)-1]
-		printf("    ⠼ Checking out last PR's branch %s...", lastPR.HeadBranch)
-		if _, err := git("checkout", lastPR.HeadBranch); err != nil {
-			debugf("could not checkout last PR branch %s: %v", lastPR.HeadBranch, err)
-			// fallback to original branch if it exists
-			if currentBranch != "" && currentBranch != config.git.remoteTrunk {
-				git("checkout", currentBranch)
-			} else {
-				git("checkout", config.git.remoteTrunk)
-			}
-		} else {
-			// get the new HEAD commit after rebase
-			newHead, _ := git("rev-parse", "HEAD")
-			newHead = strings.TrimSpace(newHead)
-			printf("\r    ✓ Checked out %s (HEAD: %s)\n", lastPR.HeadBranch, newHead[:8])
-		}
+		// get the current HEAD commit after rebase
+		newHead, _ := git("rev-parse", "HEAD")
+		newHead = strings.TrimSpace(newHead)
+		printf("    ✓ Rebased to HEAD: %s\n", newHead[:8])
 	} else if currentBranch != "" && currentBranch != config.git.remoteTrunk {
 		// restore original branch if no PRs were rebased
 		if _, err := git("checkout", currentBranch); err != nil {

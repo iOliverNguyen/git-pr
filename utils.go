@@ -20,7 +20,12 @@ type wrapWriter struct {
 
 func (w *wrapWriter) Write(p []byte) (n int, err error) {
 	if len(p) > 0 {
-		w.last = p[len(p)-1]
+		// quick and dirty detection for color codes "\033[...m"
+		if len(p) > 2 && p[0] == 27 && p[1] == '[' && p[len(p)-1] == 'm' {
+			// do nothing
+		} else {
+			w.last = p[len(p)-1]
+		}
 	}
 	return w.w.Write(p)
 }
@@ -69,6 +74,12 @@ func debugf(msg string, args ...any) {
 	if len(args) > 0 {
 		msg = fmt.Sprintf(msg, args...)
 	}
+	switch {
+	case len(msg) == 0:
+		return
+	case msg[len(msg)-1] == '\n':
+		msg = msg[:len(msg)-1]
+	}
 	if stdout.last != '\n' {
 		printf("\n")
 	}
@@ -76,15 +87,27 @@ func debugf(msg string, args ...any) {
 		stderrf("\n")
 	}
 	stderrf(gray)
-	for i := strings.Index(msg, "\n"); i >= 0; {
+
+	switch {
+	case strings.Count(msg, "\n") == 0:
 		stderrf(" │ ")
-		stderrf(msg[:i])
-		stderrf("\n")
-		msg = msg[i+1:]
-		i = strings.Index(msg, "\n")
-	}
-	if msg != "" {
-		stderrf(" │ ")
+		stderrf(msg)
+
+	default: // multi-line
+		first := true
+		for i := strings.Index(msg, "\n"); i >= 0; {
+			if first {
+				stderrf(" ┌ ")
+				first = false
+			} else {
+				stderrf(" │ ")
+			}
+			stderrf(msg[:i])
+			stderrf("\n")
+			msg = msg[i+1:]
+			i = strings.Index(msg, "\n")
+		}
+		stderrf(" └ ")
 		stderrf(msg)
 		stderrf("\n")
 	}

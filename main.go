@@ -96,6 +96,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		logs = fmt.Sprintf("push -f %v %v", config.Remote, args)
 		return logs, func() {
 			out := must(execGit("push", "-f", config.Remote, args))
+			time.Sleep(1 * time.Second)
 			if strings.Contains(out, "remote: Create a pull request") {
 				must(0, githubCreatePRForCommit(commit, prevCommit(commit)))
 			} else {

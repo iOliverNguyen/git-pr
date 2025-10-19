@@ -83,7 +83,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		remoteRef := fmt.Sprintf("%v/%v", config.gh.user, commitWithoutRemoteRef.ShortHash())
 		commitWithoutRemoteRef.SetAttr(KeyRemoteRef, remoteRef)
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
-		must(git("reword", commitWithoutRemoteRef.Hash, "-m", commitWithoutRemoteRef.FullMessage()))
+		must(rewordCommit(commitWithoutRemoteRef, commitWithoutRemoteRef.FullMessage()))
 
 		time.Sleep(500 * time.Millisecond)
 		stackedCommits = must(getStackedCommits(originMain, head))
@@ -263,6 +263,33 @@ func findCommitsWithoutRemoteRef(commits []*Commit) iter.Seq[*Commit] {
 			}
 		}
 	}
+}
+
+// rewordCommit updates a commit's message using jj describe or git reword
+func rewordCommit(commit *Commit, message string) (string, error) {
+	if config.jj.enabled {
+		// use jj change ID to avoid creating divergent commits
+		if commit.ChangeID == "" {
+			return "", errorf("commit %s has no change ID", commit.ShortHash())
+		}
+		debugf("using jj describe with change ID %s", commit.ChangeID[:12])
+		return jj("describe", "-r", commit.ChangeID, "-m", message)
+	}
+	if config.bl.enabled {
+		debugf("using git branchless reword to reword commit")
+		return git("reword", commit.Hash, "-m", message)
+	}
+
+	exitf(`ERROR: neither jj nor git-branchless is available
+
+This tool requires either:
+  1. Jujutsu (jj) - install from https://martinvonz.github.io/jj/
+     OR
+  2. git-branchless - install from https://github.com/arxanas/git-branchless
+     Then run: git branchless init
+
+After installation, try again.`)
+	return "", nil // unreachable
 }
 
 // generateStackInfo generates the stack info section showing all PRs in the stack

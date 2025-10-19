@@ -12,6 +12,7 @@ type KeyVal [2]string
 
 type Commit struct {
 	Hash        string
+	ChangeID    string // jj change ID (only populated in jj repos)
 	Date        time.Time
 	AuthorName  string
 	AuthorEmail string

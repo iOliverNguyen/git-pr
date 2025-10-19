@@ -129,6 +129,27 @@ func parseBody(lines []string) (string, string) {
 	return title, strings.TrimSpace(b.String())
 }
 
+// jjGetChangeID returns the jj change ID for a git commit hash
+func jjGetChangeID(gitHash string) (string, error) {
+	if !config.jj.enabled {
+		return "", nil
+	}
+	output, err := jj("log", "-r", gitHash, "--no-graph", "-T", "change_id")
+	if err != nil {
+		return "", err
+	}
+	// jj output may include status messages before the actual change ID
+	// get the last non-empty line
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line, nil
+		}
+	}
+	return "", errorf("failed to parse change ID from jj output: %s", output)
+}
+
 func getStackedCommits(base, target string) ([]*Commit, error) {
 	logs, err := gitLogs(100, fmt.Sprintf("%v..%v", base, target))
 	if err != nil {
@@ -138,6 +159,19 @@ func getStackedCommits(base, target string) ([]*Commit, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// populate jj change IDs if in jj repo
+	if config.jj.enabled {
+		for _, commit := range list {
+			changeID, err := jjGetChangeID(commit.Hash)
+			if err != nil {
+				debugf("warning: failed to get change ID for %s: %v", commit.ShortHash(), err)
+			} else {
+				commit.ChangeID = changeID
+			}
+		}
+	}
+
 	// sort from oldest to newest
 	return revert(list), nil
 }

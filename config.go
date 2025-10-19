@@ -215,6 +215,24 @@ ERROR: failed to parse remote url:
 		config.git.user = user
 		config.git.email = email
 	}
+	{ // detect jj
+		if _, err := os.Stat(config.repoDir + "/.jj"); err == nil {
+			version, err := _jj("version")
+			if err == nil {
+				config.jj.enabled = true
+				config.jj.version = strings.TrimPrefix(version, "jj ")
+				debugf("detected jj %s", config.jj.version)
+			}
+		}
+	}
+	{ // detect git-branchless
+		version, err := _git("branchless", "--version")
+		if err == nil {
+			config.bl.enabled = true
+			config.bl.version = strings.TrimSpace(version)
+			debugf("detected git-branchless %s", config.bl.version)
+		}
+	}
 	{ // parse github config
 		ghHosts, err := LoadGitHubConfig(*flagGitHubHosts)
 		if err != nil {

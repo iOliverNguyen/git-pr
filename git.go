@@ -150,6 +150,77 @@ func jjGetChangeID(gitHash string) (string, error) {
 	return "", errorf("failed to parse change ID from jj output: %s", output)
 }
 
+// jjGetWorkingCopy returns the working copy commit if it's non-empty with description
+func jjGetWorkingCopy() (*Commit, error) {
+	if !config.jj.enabled {
+		return nil, nil
+	}
+
+	// check if @ is non-empty with description
+	checkOutput, err := jj("log", "-r", "@", "--no-graph", "-T",
+		"if(empty, \"EMPTY\", \"NONEMPTY\") ++ \"|\" ++ if(description, \"HAS-DESC\", \"NO-DESC\")")
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(strings.TrimSpace(checkOutput), "\n")
+	lastLine := lines[len(lines)-1]
+	parts := strings.Split(lastLine, "|")
+	if len(parts) != 2 || parts[0] != "NONEMPTY" || parts[1] != "HAS-DESC" {
+		return nil, nil // skip if empty or no description
+	}
+
+	// get full info including description body
+	infoOutput, err := jj("log", "-r", "@", "--no-graph", "-T",
+		"change_id ++ \"|\" ++ commit_id ++ \"|\" ++ description")
+	if err != nil {
+		return nil, err
+	}
+
+	lines = strings.Split(strings.TrimSpace(infoOutput), "\n")
+	firstLine := lines[0]
+	parts = strings.Split(firstLine, "|")
+	if len(parts) < 3 {
+		return nil, errorf("unexpected jj @ output: %s", firstLine)
+	}
+
+	changeID := parts[0]
+	commitID := parts[1]
+	// full description starts after "changeID|commitID|"
+	descriptionBody := strings.TrimPrefix(firstLine, changeID+"|"+commitID+"|")
+	if len(lines) > 1 {
+		// description spans multiple lines
+		descriptionBody = descriptionBody + "\n" + strings.Join(lines[1:], "\n")
+	}
+
+	// parse description like a commit body
+	descLines := strings.Split(descriptionBody, "\n")
+	title, message := parseBody(descLines)
+
+	// create commit struct
+	commit := &Commit{
+		Hash:        commitID,
+		ChangeID:    changeID,
+		Title:       title,
+		Message:     message,
+		AuthorEmail: config.git.email,
+		AuthorName:  config.git.user,
+	}
+
+	// extract attributes (Remote-Ref, etc.) from description lines
+	// jj descriptions don't have leading whitespace, so use simpler regex
+	regexpJjKeyVal := regexp.MustCompile(`^([a-zA-Z0-9-]+):\s*(.*)$`)
+	for _, line := range descLines {
+		line = strings.TrimSpace(line)
+		if m := regexpJjKeyVal.FindStringSubmatch(line); m != nil {
+			key, val := strings.ToLower(m[1]), strings.TrimSpace(m[2])
+			commit.Attrs = append(commit.Attrs, KeyVal{key, val})
+		}
+	}
+
+	return commit, nil
+}
+
 func getStackedCommits(base, target string) ([]*Commit, error) {
 	logs, err := gitLogs(100, fmt.Sprintf("%v..%v", base, target))
 	if err != nil {
@@ -173,7 +244,20 @@ func getStackedCommits(base, target string) ([]*Commit, error) {
 	}
 
 	// sort from oldest to newest
-	return revert(list), nil
+	result := revert(list)
+
+	// append jj working copy at the end (newest) if applicable
+	if config.jj.enabled {
+		workingCopy, err := jjGetWorkingCopy()
+		if err != nil {
+			debugf("warning: failed to get jj working copy: %v", err)
+		} else if workingCopy != nil {
+			debugf("including jj working copy in stack: %s", workingCopy.Title)
+			result = append(result, workingCopy)
+		}
+	}
+
+	return result, nil
 }
 
 func deleteBranch(branch string) error {

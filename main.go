@@ -131,6 +131,13 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	{
 		var wg sync.WaitGroup
 		for _, commit := range stackedCommits {
+			// skip empty commits unless --allow-empty
+			if !config.allowEmpty && isEmptyCommit(commit) {
+				commit.Skip = true
+				printf("skip \"%v\" (empty commit)\n", shortenTitle(commit.Title))
+				continue
+			}
+
 			// push my own commits
 			// and include others' commits if "--include-other-authors" is set
 			shouldPush := isMyOwnCommit(commit) || config.includeOtherAuthors
@@ -163,7 +170,11 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 	// checkout the latest stacked commit
 	if !config.dryRun {
-		must(git("checkout", stackedCommits[len(stackedCommits)-1].Hash))
+		if config.jj.enabled {
+			debugf("skipping git checkout in jj repo (jj manages working copy)")
+		} else {
+			must(git("checkout", stackedCommits[len(stackedCommits)-1].Hash))
+		}
 	}
 
 	// wait for 5 seconds
@@ -359,12 +370,55 @@ func generatePRBody(commit *Commit, existingBody string, stackInfo string) strin
 }
 
 func validateGitStatusClean() bool {
+	if config.jj.enabled {
+		// check jj working copy status: empty|nonempty + description
+		output, err := jj("log", "-r", "@", "--no-graph", "-T",
+			"if(empty, \"EMPTY\", \"NONEMPTY\") ++ \"|\" ++ if(description, description.first_line(), \"NO-DESC\")")
+		if err != nil {
+			debugf("warning: failed to check jj status: %v", err)
+			// fallback to git status check
+		} else {
+			// parse output: "EMPTY|desc" or "NONEMPTY|NO-DESC" or "NONEMPTY|desc"
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+			lastLine := lines[len(lines)-1] // get last line (actual output)
+			parts := strings.Split(lastLine, "|")
+			if len(parts) == 2 {
+				isEmpty := parts[0] == "EMPTY"
+				hasDesc := parts[1] != "NO-DESC"
+
+				if isEmpty {
+					debugf("jj working copy is empty, proceeding normally")
+					return true
+				}
+				if !isEmpty && hasDesc {
+					debugf("jj working copy has changes with description, will include in stack")
+					return true
+				}
+				// not empty and no description - error
+				return false
+			}
+		}
+	}
+
+	// for git repos or jj fallback
 	output := must(git("status"))
 	return strings.Contains(output, "nothing to commit, working tree clean")
 }
 
 func isMyOwnCommit(commit *Commit) bool {
 	return commit.AuthorEmail == config.git.email
+}
+
+// isEmptyCommit checks if a commit has no file changes
+func isEmptyCommit(commit *Commit) bool {
+	// use git to check if commit has file changes
+	output, err := git("diff-tree", "--no-commit-id", "--name-only", "-r", commit.Hash)
+	if err != nil {
+		debugf("warning: failed to check if commit is empty: %v", err)
+		return false // assume not empty on error
+	}
+
+	return strings.TrimSpace(output) == ""
 }
 
 func splitEmail(email string) (string, string) {

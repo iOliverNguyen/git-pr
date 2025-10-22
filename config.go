@@ -42,6 +42,7 @@ type Config struct {
 	timeout time.Duration // flag
 
 	includeOtherAuthors bool   // flag
+	allowEmpty          bool   // flag: allow pushing empty commits
 	dryRun              bool   // flag: show what would be done without making changes
 	stopAfter           string // flag: stop after specific phase
 }
@@ -82,6 +83,7 @@ func LoadConfig() (config Config) {
 	flagVersion := flag.Bool("version", false, "Show version information")
 	flag.BoolVar(&config.verbose, "v", false, "Verbose output")
 	flag.BoolVar(&config.includeOtherAuthors, "include-other-authors", false, "Create PRs for commits from other authors (default to false: skip)")
+	flag.BoolVar(&config.allowEmpty, "allow-empty", false, "Allow pushing empty commits (default: skip empty commits)")
 	flag.BoolVar(&config.dryRun, "dry-run", false, "Show what would be done without making changes")
 	flag.StringVar(&config.stopAfter, "stop-after", "", "Stop after phase: validate|get-commits|rewrite|push|pr-create")
 

@@ -166,9 +166,25 @@ func jjGetWorkingCopy() (*Commit, error) {
 	lines := strings.Split(strings.TrimSpace(checkOutput), "\n")
 	lastLine := lines[len(lines)-1]
 	parts := strings.Split(lastLine, "|")
-	if len(parts) != 2 || parts[0] != "NONEMPTY" || parts[1] != "HAS-DESC" {
-		return nil, nil // skip if empty or no description
+
+	if len(parts) != 2 {
+		return nil, nil
 	}
+
+	isEmpty := parts[0] == "EMPTY"
+	hasDesc := parts[1] == "HAS-DESC"
+
+	// skip if no description at all
+	if !hasDesc {
+		return nil, nil
+	}
+
+	// skip if empty and --allow-empty is not set
+	if isEmpty && !config.allowEmpty {
+		return nil, nil
+	}
+
+	// include if: (non-empty) OR (empty with --allow-empty flag)
 
 	// get full info including description body
 	infoOutput, err := jj("log", "-r", "@", "--no-graph", "-T",

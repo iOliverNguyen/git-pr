@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"iter"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,9 +86,9 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		debugf("creating remote ref %v for %v", remoteRef, commitWithoutRemoteRef.Title)
 		must(rewordCommit(commitWithoutRemoteRef, commitWithoutRemoteRef.FullMessage()))
 
-		time.Sleep(500 * time.Millisecond)
-		stackedCommits = must(getStackedCommits(originMain, head))
+		time.Sleep(time.Millisecond)
 	}
+	stackedCommits = must(getStackedCommits(originMain, head))
 
 	// checkpoint: rewrite
 	if config.stopAfter == "rewrite" {
@@ -264,6 +265,8 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 }
 
 func findCommitsWithoutRemoteRef(commits []*Commit) iter.Seq[*Commit] {
+	commits = slices.Clone(commits)
+	slices.Reverse(commits)
 	return func(yield func(*Commit) bool) {
 		for _, commit := range commits {
 			if commit.Skip {

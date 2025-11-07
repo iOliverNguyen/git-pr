@@ -55,10 +55,9 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 	backup := lines
 	out := &Commit{}
 	// parse header
-	bodyStart := 0
 	for i, line := range lines {
 		if line == "" {
-			bodyStart = i + 1
+			lines = lines[i+1:]
 			break
 		}
 		if m := regexpCommitHash.FindStringSubmatch(line); m != nil {
@@ -83,32 +82,11 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 			out.Date = date.UTC()
 		}
 	}
-	// truncate empty lines
-	bodyEnd := 0
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.TrimSpace(lines[i]) != "" {
-			bodyEnd = i + 1
-			break
-		}
-	}
-	bodyLines := lines[bodyStart:bodyEnd]
-	// parse footer
-	footerStart := len(bodyLines)
-	for i := len(bodyLines) - 1; i >= 0; i-- {
-		line := bodyLines[i]
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		if m := regexpKeyVal.FindStringSubmatch(line); m != nil {
-			key, val := strings.ToLower(m[1]), strings.TrimSpace(m[2])
-			out.Attrs = append(out.Attrs, KeyVal{key, val})
-		} else {
-			footerStart = i + 1
-			break
-		}
-	}
+	// parse title
+	title = strings.TrimSpace(lines[0])
+
 	// parse body
-	out.Title, out.Message = parseBody(bodyLines[:footerStart])
+	out.Title, out.Message, out.Attrs = parseAttrs(lines[bodyStart:])
 	// validate
 	if out.Hash == "" || out.AuthorName == "" || out.AuthorEmail == "" || out.Title == "" {
 		panicf(nil, "failed to parse commit with log:\n%v", strings.Join(backup, "\n"))
@@ -116,17 +94,32 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 	return out, nil
 }
 
-func parseBody(lines []string) (string, string) {
-	if len(lines) == 0 {
-		return "", ""
+func parseAttrs(lines []string) (message string, attrs []KeyVal) {
+	// parse footer
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		if strings.TrimSpace(line) == "" {
+			continue // skip empty lines
+		}
+		if m := regexpKeyVal.FindStringSubmatch(line); m != nil {
+			key, val := strings.ToLower(m[1]), strings.TrimSpace(m[2])
+			attrs = append(attrs, KeyVal{key, val})
+		} else {
+			lines = lines[:i+1]
+			break
+		}
 	}
-	title := strings.TrimSpace(lines[0])
+
+	if len(lines) == 0 {
+		return // empty body
+	}
+
 	var b strings.Builder
 	for _, line := range lines[1:] {
 		b.WriteString(strings.TrimPrefix(line, "    "))
 		b.WriteByte('\n')
 	}
-	return title, strings.TrimSpace(b.String())
+	return strings.TrimSpace(b.String()), attrs
 }
 
 // jjGetChangeID returns the jj change ID for a git commit hash
@@ -211,7 +204,7 @@ func jjGetWorkingCopy() (*Commit, error) {
 
 	// parse description like a commit body
 	descLines := strings.Split(descriptionBody, "\n")
-	title, message := parseBody(descLines)
+	title, message := parseAttrs(descLines)
 
 	// create commit struct
 	commit := &Commit{

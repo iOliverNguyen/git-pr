@@ -18,6 +18,13 @@ type wrapWriter struct {
 	last byte
 }
 
+func (w *wrapWriter) ensureNewline() {
+	if w.last != '\n' {
+		_, _ = w.w.Write([]byte{'\n'})
+		w.last = '\n'
+	}
+}
+
 func (w *wrapWriter) Write(p []byte) (n int, err error) {
 	if len(p) > 0 {
 		// quick and dirty detection for color codes "\033[...m"
@@ -45,7 +52,10 @@ func fprintf(w io.Writer, format string, args ...any) {
 }
 
 func printf(format string, args ...any) {
+	stdout.ensureNewline()
+	stderr.ensureNewline()
 	fprintf(stdout, format, args...)
+	stdout.ensureNewline()
 }
 
 func stderrf(format string, args ...any) {
@@ -80,12 +90,8 @@ func debugf(msg string, args ...any) {
 	case msg[len(msg)-1] == '\n':
 		msg = msg[:len(msg)-1]
 	}
-	if stdout.last != '\n' {
-		printf("\n")
-	}
-	if stderr.last != '\n' {
-		stderrf("\n")
-	}
+	stdout.ensureNewline()
+	stderr.ensureNewline()
 	stderrf(gray)
 
 	switch {
@@ -111,6 +117,7 @@ func debugf(msg string, args ...any) {
 		stderrf(msg)
 		stderrf("\n")
 	}
+	// stderr.ensureNewline()
 	stderrf(reset)
 }
 

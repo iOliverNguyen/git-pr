@@ -296,3 +296,31 @@ Description of the feature.
 		assert(t, commit == nil).Errorf("expected nil for invalid format")
 	})
 }
+
+func TestShortenTitle(t *testing.T) {
+	t.Run("short title unchanged", func(t *testing.T) {
+		title := "fix: bug"
+		result := shortenTitle(title)
+		assert(t, result == title).Errorf("shortenTitle(%q) = %q, want %q", title, result, title)
+	})
+
+	t.Run("exact max length unchanged", func(t *testing.T) {
+		title := "fix: this is exactly thirty-six!"
+		result := shortenTitle(title)
+		assert(t, result == title).Errorf("shortenTitle(%q) = %q, want %q", title, result, title)
+	})
+
+	t.Run("long title with space", func(t *testing.T) {
+		title := "feat: add a very long feature that exceeds the maximum length"
+		result := shortenTitle(title)
+		assert(t, len(result) <= 40).Errorf("result too long: %d chars", len(result))
+		assert(t, strings.HasSuffix(result, " ...")).Errorf("should end with ' ...': %q", result)
+	})
+
+	t.Run("long title without space", func(t *testing.T) {
+		title := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		result := shortenTitle(title)
+		assert(t, len(result) == 39).Errorf("result length = %d, want 39", len(result))
+		assert(t, strings.HasSuffix(result, "...")).Errorf("should end with '...': %q", result)
+	})
+}

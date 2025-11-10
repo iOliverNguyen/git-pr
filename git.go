@@ -281,7 +281,76 @@ func getStackedCommits(base, target string) ([]*Commit, error) {
 		}
 	}
 
+	// validate commits and collect warnings/errors
+	var warnings []string
+	var errors []string
+	filtered = result[:0] // reuse filtered slice for non-skipped commits
+
+	for _, commit := range result {
+		isEmpty := isEmptyCommit(commit)
+		hasEmptyTitle := commit.Title == ""
+
+		if hasEmptyTitle && isEmpty {
+			// warn: empty title + no file changes
+			warnings = append(warnings, fmt.Sprintf("⚠️  commit %s has empty title and no file changes, skipping", commit.ShortHash()))
+			commit.Skip = true
+			continue
+		} else if hasEmptyTitle {
+			// error: empty title + has file changes
+			errors = append(errors, fmt.Sprintf("❌ commit %s has empty title but contains file changes (fix required)", commit.ShortHash()))
+			commit.Skip = true
+			continue
+		} else if isEmpty {
+			// warn: no file changes
+			warnings = append(warnings, fmt.Sprintf("⚠️  commit %s %q has no file changes, skipping", commit.ShortHash(), shortenTitle(commit.Title)))
+			commit.Skip = true
+			continue
+		}
+
+		filtered = append(filtered, commit)
+	}
+	result = filtered
+
+	// print warnings and errors
+	for _, msg := range warnings {
+		printf("%s\n", msg)
+	}
+	for _, msg := range errors {
+		printf("%s\n", msg)
+	}
+
+	// return error if any validation errors
+	if len(errors) > 0 {
+		return nil, errorf("validation failed, please fix the commits above")
+	}
+
 	return result, nil
+}
+
+// isEmptyCommit checks if a commit has no file changes
+func isEmptyCommit(commit *Commit) bool {
+	// use git to check if commit has file changes
+	output, err := git("diff-tree", "--no-commit-id", "--name-only", "-r", commit.Hash)
+	if err != nil {
+		debugf("warning: failed to check if commit is empty: %v", err)
+		return false // assume not empty on error
+	}
+
+	return strings.TrimSpace(output) == ""
+}
+
+func shortenTitle(title string) string {
+	const Max = 36
+	if len(title) <= Max {
+		return title
+	}
+	title = title[:Max]
+	idx := strings.LastIndexByte(title, ' ')
+	if idx == -1 {
+		return title + "..."
+	} else {
+		return title[:idx] + " ..."
+	}
 }
 
 func deleteBranch(branch string) error {

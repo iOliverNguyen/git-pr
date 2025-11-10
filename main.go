@@ -132,13 +132,6 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	{
 		var wg sync.WaitGroup
 		for _, commit := range stackedCommits {
-			// skip empty commits unless --allow-empty
-			if !config.allowEmpty && isEmptyCommit(commit) {
-				commit.Skip = true
-				printf("skip \"%v\" (empty commit)\n", shortenTitle(commit.Title))
-				continue
-			}
-
 			// push my own commits
 			// and include others' commits if "--include-other-authors" is set
 			shouldPush := isMyOwnCommit(commit) || config.includeOtherAuthors
@@ -412,37 +405,11 @@ func isMyOwnCommit(commit *Commit) bool {
 	return commit.AuthorEmail == config.git.email
 }
 
-// isEmptyCommit checks if a commit has no file changes
-func isEmptyCommit(commit *Commit) bool {
-	// use git to check if commit has file changes
-	output, err := git("diff-tree", "--no-commit-id", "--name-only", "-r", commit.Hash)
-	if err != nil {
-		debugf("warning: failed to check if commit is empty: %v", err)
-		return false // assume not empty on error
-	}
-
-	return strings.TrimSpace(output) == ""
-}
-
 func splitEmail(email string) (string, string) {
 	if idx := strings.Index(email, "@"); idx >= 0 {
 		return email[:idx], email[idx:]
 	}
 	return email, ""
-}
-
-func shortenTitle(title string) string {
-	const Max = 36
-	if len(title) <= Max {
-		return title
-	}
-	title = title[:Max]
-	idx := strings.LastIndexByte(title, ' ')
-	if idx == -1 {
-		return title + "..."
-	} else {
-		return title[:idx] + " ..."
-	}
 }
 
 func coalesce(a, b string) string {

@@ -222,3 +222,99 @@ Date:   2024-01-01 12:34:56 +0000
 		assert(t, c.Date.Location().String() == "UTC").Errorf("date location = %v, want UTC", c.Date.Location())
 	})
 }
+
+func TestParseJJWorkingCopy(t *testing.T) {
+	t.Run("empty without description", func(t *testing.T) {
+		checkOutput := "EMPTY|NO-DESC"
+		infoOutput := "abc123|def456|"
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		assert(t, err == nil).Fatalf("error = %v", err)
+		assert(t, commit == nil).Errorf("expected nil, got %+v", commit)
+	})
+
+	t.Run("nonempty without description", func(t *testing.T) {
+		checkOutput := "NONEMPTY|NO-DESC"
+		infoOutput := "abc123|def456|test"
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		assert(t, err == nil).Fatalf("error = %v", err)
+		assert(t, commit == nil).Errorf("expected nil, got %+v", commit)
+	})
+
+	t.Run("empty with description, allowEmpty=false", func(t *testing.T) {
+		checkOutput := "EMPTY|HAS-DESC"
+		infoOutput := "abc123|def456|test commit"
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		assert(t, err == nil).Fatalf("error = %v", err)
+		assert(t, commit == nil).Errorf("expected nil, got %+v", commit)
+	})
+
+	t.Run("empty with description, allowEmpty=true", func(t *testing.T) {
+		checkOutput := "EMPTY|HAS-DESC"
+		infoOutput := "abc123|def456|test commit"
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, true)
+		assert(t, err == nil).Fatalf("error = %v", err)
+		assert(t, commit != nil).Fatalf("expected commit, got nil")
+		assert(t, commit.ChangeID == "abc123").Errorf("changeID = %q", commit.ChangeID)
+		assert(t, commit.Hash == "def456").Errorf("hash = %q", commit.Hash)
+		assert(t, commit.Title == "test commit").Errorf("title = %q", commit.Title)
+		assert(t, commit.Message == "").Errorf("message = %q, want empty", commit.Message)
+	})
+
+	t.Run("nonempty with description", func(t *testing.T) {
+		checkOutput := "NONEMPTY|HAS-DESC"
+		infoOutput := "change123|commit456|feat: add new feature"
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		assert(t, err == nil).Fatalf("error = %v", err)
+		assert(t, commit != nil).Fatalf("expected commit, got nil")
+		assert(t, commit.ChangeID == "change123").Errorf("changeID = %q", commit.ChangeID)
+		assert(t, commit.Hash == "commit456").Errorf("hash = %q", commit.Hash)
+		assert(t, commit.Title == "feat: add new feature").Errorf("title = %q", commit.Title)
+		assert(t, commit.Message == "").Errorf("message = %q, want empty", commit.Message)
+	})
+
+	t.Run("multi-line description with body", func(t *testing.T) {
+		checkOutput := "NONEMPTY|HAS-DESC"
+		infoOutput := `change123|commit456|fix: resolve bug
+
+This is a detailed explanation
+of the bug fix.`
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		assert(t, err == nil).Fatalf("error = %v", err)
+		assert(t, commit != nil).Fatalf("expected commit, got nil")
+		assert(t, commit.Title == "fix: resolve bug").Errorf("title = %q", commit.Title)
+		assert(t, commit.Message == "This is a detailed explanation\nof the bug fix.").Errorf("message = %q", commit.Message)
+	})
+
+	t.Run("description with footers", func(t *testing.T) {
+		checkOutput := "NONEMPTY|HAS-DESC"
+		infoOutput := `change123|commit456|feat: implement feature
+
+Description of the feature.
+
+    Remote-Ref: user/abc123
+    Tags: feature, test`
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		assert(t, err == nil).Fatalf("error = %v", err)
+		assert(t, commit != nil).Fatalf("expected commit, got nil")
+		assert(t, commit.Title == "feat: implement feature").Errorf("title = %q", commit.Title)
+		assert(t, commit.Message == "Description of the feature.").Errorf("message = %q", commit.Message)
+		assert(t, commit.GetRemoteRef() == "user/abc123").Errorf("remote-ref = %q", commit.GetRemoteRef())
+		assert(t, commit.GetAttr("tags") == "feature, test").Errorf("tags = %q", commit.GetAttr("tags"))
+	})
+
+	t.Run("invalid format - wrong parts count", func(t *testing.T) {
+		checkOutput := "NONEMPTY|HAS-DESC"
+		infoOutput := "onlyonepart"
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		assert(t, err != nil).Errorf("expected error, got nil")
+		assert(t, commit == nil).Errorf("expected nil commit on error")
+	})
+
+	t.Run("invalid checkOutput format", func(t *testing.T) {
+		checkOutput := "INVALID"
+		infoOutput := "change123|commit456|title"
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		assert(t, err == nil).Fatalf("error = %v", err)
+		assert(t, commit == nil).Errorf("expected nil for invalid format")
+	})
+}

@@ -148,19 +148,10 @@ func jjGetChangeID(gitHash string) (string, error) {
 	return "", errorf("failed to parse change ID from jj output: %s", output)
 }
 
-// jjGetWorkingCopy returns the working copy commit if it's non-empty with description
-func jjGetWorkingCopy() (*Commit, error) {
-	if !config.jj.enabled {
-		return nil, nil
-	}
-
-	// check if @ is non-empty with description
-	checkOutput, err := jj("log", "-r", "@", "--no-graph", "-T",
-		"if(empty, \"EMPTY\", \"NONEMPTY\") ++ \"|\" ++ if(description, \"HAS-DESC\", \"NO-DESC\")")
-	if err != nil {
-		return nil, err
-	}
-
+// parseJJWorkingCopy parses jujutsu working copy output into a Commit.
+// checkOutput format: "EMPTY|HAS-DESC" or "NONEMPTY|NO-DESC"
+// infoOutput format: "changeID|commitID|description"
+func parseJJWorkingCopy(checkOutput, infoOutput string, allowEmpty bool) (*Commit, error) {
 	lines := strings.Split(strings.TrimSpace(checkOutput), "\n")
 	lastLine := lines[len(lines)-1]
 	parts := strings.Split(lastLine, "|")
@@ -178,19 +169,13 @@ func jjGetWorkingCopy() (*Commit, error) {
 	}
 
 	// skip if empty and --allow-empty is not set
-	if isEmpty && !config.allowEmpty {
+	if isEmpty && !allowEmpty {
 		return nil, nil
 	}
 
 	// include if: (non-empty) OR (empty with --allow-empty flag)
 
-	// get full info including description body
-	infoOutput, err := jj("log", "-r", "@", "--no-graph", "-T",
-		"change_id ++ \"|\" ++ commit_id ++ \"|\" ++ description")
-	if err != nil {
-		return nil, err
-	}
-
+	// parse info output
 	lines = strings.Split(strings.TrimSpace(infoOutput), "\n")
 	firstLine := lines[0]
 	parts = strings.Split(firstLine, "|")
@@ -213,7 +198,7 @@ func jjGetWorkingCopy() (*Commit, error) {
 	if len(descLines) > 0 {
 		title = strings.TrimSpace(descLines[0])
 	}
-	message, attrs := parseAttrs(descLines)
+	message, attrs := parseAttrs(descLines[1:])
 
 	// create commit struct
 	commit := &Commit{
@@ -226,6 +211,29 @@ func jjGetWorkingCopy() (*Commit, error) {
 		AuthorName:  config.git.user,
 	}
 	return commit, nil
+}
+
+// jjGetWorkingCopy returns the working copy commit if it's non-empty with description
+func jjGetWorkingCopy() (*Commit, error) {
+	if !config.jj.enabled {
+		return nil, nil
+	}
+
+	// check if @ is non-empty with description
+	checkOutput, err := jj("log", "-r", "@", "--no-graph", "-T",
+		"if(empty, \"EMPTY\", \"NONEMPTY\") ++ \"|\" ++ if(description, \"HAS-DESC\", \"NO-DESC\")")
+	if err != nil {
+		return nil, err
+	}
+
+	// get full info including description body
+	infoOutput, err := jj("log", "-r", "@", "--no-graph", "-T",
+		"change_id ++ \"|\" ++ commit_id ++ \"|\" ++ description")
+	if err != nil {
+		return nil, err
+	}
+
+	return parseJJWorkingCopy(checkOutput, infoOutput, config.allowEmpty)
 }
 
 func getStackedCommits(base, target string) ([]*Commit, error) {

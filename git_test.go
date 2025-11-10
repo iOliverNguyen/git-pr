@@ -7,17 +7,13 @@ import (
 
 func TestParseLogs(t *testing.T) {
 	t.Run("parse logs", func(t *testing.T) {
-		// Sample logs with 5 commits testing different scenarios:
-		// 1. Empty commit (no title, no body) - like jujutsu "jj new"
-		// 2. Simple commit (title only, no body)
-		// 3. Commit with body and footers (draft/random tags, Remote-Ref, Tags attributes)
-		// 4. Commit with simple body (no footers)
-		// 5. Commit with emoji in title and multi-paragraph body with multiple sections
+		// Sample logs with 4 commits testing different scenarios:
+		// 1. Simple commit (title only, no body)
+		// 2. Commit with body and footers (draft/random tags, Remote-Ref, Tags attributes)
+		// 3. Commit with simple body (no footers)
+		// 4. Commit with emoji in title and multi-paragraph body with multiple sections
+		// Note: empty commits (no title and no message) are filtered out
 		logs := `
-commit 4aaaee8852a1aa92ed01ff28c4f40331833f9281
-Author: Oliver N <oliver@example.com>
-Date:   Mon Dec 31 10:32:05 2025 +0700
-
 commit 2e4d93e3728b7d3baa6ed3d8d56d9e4fbd73422d
 Author: Alice M <alice@example.com>
 Date:   Fri Nov 30 18:30:16 2025 -0300
@@ -75,52 +71,46 @@ Date:   Sun Dec 31 8:02:52 2025 +0700
 `
 		commits, err := parseLogs(logs)
 		assert(t, err == nil).Fatalf("parseLogs() error = %v", err)
-		// verify we parsed 5 commits
-		assert(t, len(commits) == 5).Fatalf("expected 5 commits, got %d", len(commits))
+		// verify we parsed 4 commits
+		assert(t, len(commits) == 4).Fatalf("expected 4 commits, got %d", len(commits))
 
-		// test commit 1: empty title and body (like jujutsu "jj new")
+		// test commit 1: simple title only
 		c1 := commits[0]
-		assert(t, c1.AuthorName == "Oliver N").Errorf("commit 1 author name = %q, want %q", c1.AuthorName, "Oliver N")
-		assert(t, c1.Title == "").Errorf("commit 1 title = %q, want empty", c1.Title)
+		assert(t, c1.Hash == "2e4d93e3728b7d3baa6ed3d8d56d9e4fbd73422d").Errorf("commit 1 hash = %q", c1.Hash)
 		assert(t, c1.Message == "").Errorf("commit 1 message = %q, want empty", c1.Message)
+		assert(t, len(c1.Attrs) == 0).Errorf("commit 1 attrs = %v, want empty", c1.Attrs)
 
-		// test commit 2: simple title only
+		// test commit 2: with body and footers
 		c2 := commits[1]
-		assert(t, c2.Hash == "2e4d93e3728b7d3baa6ed3d8d56d9e4fbd73422d").Errorf("commit 2 hash = %q", c2.Hash)
-		assert(t, c2.Message == "").Errorf("commit 2 message = %q, want empty", c2.Message)
-		assert(t, len(c2.Attrs) == 0).Errorf("commit 2 attrs = %v, want empty", c2.Attrs)
-
-		// test commit 3: with body and footers
-		c3 := commits[2]
-		assert(t, c3.Hash == "1a3f1e297fec2af1cae6fa5f8d0955e2dfa4b0dc").Errorf("commit 3 hash = %q", c3.Hash)
-		assert(t, c3.Title == "[draft][random] this is an example commit message").Errorf("commit 3 title = %q", c3.Title)
+		assert(t, c2.Hash == "1a3f1e297fec2af1cae6fa5f8d0955e2dfa4b0dc").Errorf("commit 2 hash = %q", c2.Hash)
+		assert(t, c2.Title == "[draft][random] this is an example commit message").Errorf("commit 2 title = %q", c2.Title)
 		expectedMsg := "Summary\n---\n\nthis is an example commit message"
-		assert(t, c3.Message == expectedMsg).Errorf("commit 3 message = %q, want %q", c3.Message, expectedMsg)
+		assert(t, c2.Message == expectedMsg).Errorf("commit 2 message = %q, want %q", c2.Message, expectedMsg)
 		// check Remote-Ref attribute
-		remoteRef := c3.GetRemoteRef()
-		assert(t, remoteRef == "iOliverNguyen/13453619").Errorf("commit 3 remote-ref = %q, want %q", remoteRef, "iOliverNguyen/13453619")
+		remoteRef := c2.GetRemoteRef()
+		assert(t, remoteRef == "iOliverNguyen/13453619").Errorf("commit 2 remote-ref = %q, want %q", remoteRef, "iOliverNguyen/13453619")
 		// check Tags attribute
-		tags := c3.GetAttr("tags")
-		assert(t, tags == "example, testing").Errorf("commit 3 tags = %q, want %q", tags, "example, testing")
+		tags := c2.GetAttr("tags")
+		assert(t, tags == "example, testing").Errorf("commit 2 tags = %q, want %q", tags, "example, testing")
 
-		// test commit 4: simple body without footers
+		// test commit 3: simple body without footers
+		c3 := commits[2]
+		assert(t, c3.Hash == "8bb40dd65938b9c93b446113a61fe204b02011b8").Errorf("commit 3 hash = %q", c3.Hash)
+		assert(t, c3.Title == "feat: add new feature to improve performance").Errorf("commit 3 title = %q", c3.Title)
+		assert(t, c3.Message == "added a new caching layer to reduce latency").Errorf("commit 3 message = %q", c3.Message)
+
+		// test commit 4: emoji in title and multi-paragraph body
 		c4 := commits[3]
-		assert(t, c4.Hash == "8bb40dd65938b9c93b446113a61fe204b02011b8").Errorf("commit 4 hash = %q", c4.Hash)
-		assert(t, c4.Title == "feat: add new feature to improve performance").Errorf("commit 4 title = %q", c4.Title)
-		assert(t, c4.Message == "added a new caching layer to reduce latency").Errorf("commit 4 message = %q", c4.Message)
-
-		// test commit 5: emoji in title and multi-paragraph body
-		c5 := commits[4]
-		assert(t, c5.Hash == "2b59e7223f2cb3196fe2ef322ca6c2f205f24285").Errorf("commit 5 hash = %q", c5.Hash)
+		assert(t, c4.Hash == "2b59e7223f2cb3196fe2ef322ca6c2f205f24285").Errorf("commit 4 hash = %q", c4.Hash)
 		// Note: title is only the first line
 		expectedTitle := "🛠️ Introduce a simulated SuperpowerDB backend in unit tests to centralize"
-		assert(t, c5.Title == expectedTitle).Errorf("commit 5 title = %q, want %q", c5.Title, expectedTitle)
+		assert(t, c4.Title == expectedTitle).Errorf("commit 4 title = %q, want %q", c4.Title, expectedTitle)
 		// the second line becomes part of the message
-		assert(t, c5.GetRemoteRef() == "iOliverNguyen/13453620").Errorf("commit 5 remote-ref = %q", c5.GetRemoteRef())
+		assert(t, c4.GetRemoteRef() == "iOliverNguyen/13453620").Errorf("commit 4 remote-ref = %q", c4.GetRemoteRef())
 		// verify message contains sections
-		assert(t, strings.Contains(c5.Message, "## Changes")).Errorf("commit 5 message missing '## Changes' section")
-		assert(t, strings.Contains(c5.Message, "## Why Needed")).Errorf("commit 5 message missing '## Why Needed' section")
-		assert(t, strings.Contains(c5.Message, "## Impact")).Errorf("commit 5 message missing '## Impact' section")
+		assert(t, strings.Contains(c4.Message, "## Changes")).Errorf("commit 4 message missing '## Changes' section")
+		assert(t, strings.Contains(c4.Message, "## Why Needed")).Errorf("commit 4 message missing '## Why Needed' section")
+		assert(t, strings.Contains(c4.Message, "## Impact")).Errorf("commit 4 message missing '## Impact' section")
 	})
 
 	t.Run("ParseLogsEmpty", func(t *testing.T) {
@@ -227,7 +217,7 @@ func TestParseJJWorkingCopy(t *testing.T) {
 	t.Run("empty without description", func(t *testing.T) {
 		checkOutput := "EMPTY|NO-DESC"
 		infoOutput := "abc123|def456|"
-		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput)
 		assert(t, err == nil).Fatalf("error = %v", err)
 		assert(t, commit == nil).Errorf("expected nil, got %+v", commit)
 	})
@@ -235,35 +225,23 @@ func TestParseJJWorkingCopy(t *testing.T) {
 	t.Run("nonempty without description", func(t *testing.T) {
 		checkOutput := "NONEMPTY|NO-DESC"
 		infoOutput := "abc123|def456|test"
-		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput)
 		assert(t, err == nil).Fatalf("error = %v", err)
 		assert(t, commit == nil).Errorf("expected nil, got %+v", commit)
 	})
 
-	t.Run("empty with description, allowEmpty=false", func(t *testing.T) {
+	t.Run("empty with description", func(t *testing.T) {
 		checkOutput := "EMPTY|HAS-DESC"
 		infoOutput := "abc123|def456|test commit"
-		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput)
 		assert(t, err == nil).Fatalf("error = %v", err)
-		assert(t, commit == nil).Errorf("expected nil, got %+v", commit)
-	})
-
-	t.Run("empty with description, allowEmpty=true", func(t *testing.T) {
-		checkOutput := "EMPTY|HAS-DESC"
-		infoOutput := "abc123|def456|test commit"
-		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, true)
-		assert(t, err == nil).Fatalf("error = %v", err)
-		assert(t, commit != nil).Fatalf("expected commit, got nil")
-		assert(t, commit.ChangeID == "abc123").Errorf("changeID = %q", commit.ChangeID)
-		assert(t, commit.Hash == "def456").Errorf("hash = %q", commit.Hash)
-		assert(t, commit.Title == "test commit").Errorf("title = %q", commit.Title)
-		assert(t, commit.Message == "").Errorf("message = %q, want empty", commit.Message)
+		assert(t, commit == nil).Errorf("expected nil for empty commit, got %+v", commit)
 	})
 
 	t.Run("nonempty with description", func(t *testing.T) {
 		checkOutput := "NONEMPTY|HAS-DESC"
 		infoOutput := "change123|commit456|feat: add new feature"
-		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput)
 		assert(t, err == nil).Fatalf("error = %v", err)
 		assert(t, commit != nil).Fatalf("expected commit, got nil")
 		assert(t, commit.ChangeID == "change123").Errorf("changeID = %q", commit.ChangeID)
@@ -278,7 +256,7 @@ func TestParseJJWorkingCopy(t *testing.T) {
 
 This is a detailed explanation
 of the bug fix.`
-		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput)
 		assert(t, err == nil).Fatalf("error = %v", err)
 		assert(t, commit != nil).Fatalf("expected commit, got nil")
 		assert(t, commit.Title == "fix: resolve bug").Errorf("title = %q", commit.Title)
@@ -293,7 +271,7 @@ Description of the feature.
 
     Remote-Ref: user/abc123
     Tags: feature, test`
-		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput)
 		assert(t, err == nil).Fatalf("error = %v", err)
 		assert(t, commit != nil).Fatalf("expected commit, got nil")
 		assert(t, commit.Title == "feat: implement feature").Errorf("title = %q", commit.Title)
@@ -305,7 +283,7 @@ Description of the feature.
 	t.Run("invalid format - wrong parts count", func(t *testing.T) {
 		checkOutput := "NONEMPTY|HAS-DESC"
 		infoOutput := "onlyonepart"
-		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput)
 		assert(t, err != nil).Errorf("expected error, got nil")
 		assert(t, commit == nil).Errorf("expected nil commit on error")
 	})
@@ -313,7 +291,7 @@ Description of the feature.
 	t.Run("invalid checkOutput format", func(t *testing.T) {
 		checkOutput := "INVALID"
 		infoOutput := "change123|commit456|title"
-		commit, err := parseJJWorkingCopy(checkOutput, infoOutput, false)
+		commit, err := parseJJWorkingCopy(checkOutput, infoOutput)
 		assert(t, err == nil).Fatalf("error = %v", err)
 		assert(t, commit == nil).Errorf("expected nil for invalid format")
 	})

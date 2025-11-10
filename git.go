@@ -151,7 +151,7 @@ func jjGetChangeID(gitHash string) (string, error) {
 // parseJJWorkingCopy parses jujutsu working copy output into a Commit.
 // checkOutput format: "EMPTY|HAS-DESC" or "NONEMPTY|NO-DESC"
 // infoOutput format: "changeID|commitID|description"
-func parseJJWorkingCopy(checkOutput, infoOutput string, allowEmpty bool) (*Commit, error) {
+func parseJJWorkingCopy(checkOutput, infoOutput string) (*Commit, error) {
 	lines := strings.Split(strings.TrimSpace(checkOutput), "\n")
 	lastLine := lines[len(lines)-1]
 	parts := strings.Split(lastLine, "|")
@@ -168,12 +168,12 @@ func parseJJWorkingCopy(checkOutput, infoOutput string, allowEmpty bool) (*Commi
 		return nil, nil
 	}
 
-	// skip if empty and --allow-empty is not set
-	if isEmpty && !allowEmpty {
+	// skip empty commits (no changes)
+	if isEmpty {
 		return nil, nil
 	}
 
-	// include if: (non-empty) OR (empty with --allow-empty flag)
+	// include only non-empty commits with description
 
 	// parse info output
 	lines = strings.Split(strings.TrimSpace(infoOutput), "\n")
@@ -233,7 +233,7 @@ func jjGetWorkingCopy() (*Commit, error) {
 		return nil, err
 	}
 
-	return parseJJWorkingCopy(checkOutput, infoOutput, config.allowEmpty)
+	return parseJJWorkingCopy(checkOutput, infoOutput)
 }
 
 func getStackedCommits(base, target string) ([]*Commit, error) {
@@ -245,6 +245,15 @@ func getStackedCommits(base, target string) ([]*Commit, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// filter out empty commits (no title and no message)
+	filtered := make([]*Commit, 0, len(list))
+	for _, commit := range list {
+		if commit.Title != "" || commit.Message != "" {
+			filtered = append(filtered, commit)
+		}
+	}
+	list = filtered
 
 	// populate jj change IDs if in jj repo
 	if config.jj.enabled {

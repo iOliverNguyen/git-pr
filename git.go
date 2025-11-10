@@ -22,7 +22,8 @@ func gitLogs(size int, extra ...string) (string, error) {
 }
 
 func parseLogs(logs string) (out CommitList, _ error) {
-	if strings.TrimSpace(logs) == "" {
+	logs = strings.TrimSpace(logs)
+	if logs == "" {
 		return nil, nil
 	}
 	lines := strings.Split(logs, "\n")
@@ -55,9 +56,10 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 	backup := lines
 	out := &Commit{}
 	// parse header
+	bodyStart := len(lines) // default: no body
 	for i, line := range lines {
 		if line == "" {
-			lines = lines[i+1:]
+			bodyStart = i + 1
 			break
 		}
 		if m := regexpCommitHash.FindStringSubmatch(line); m != nil {
@@ -82,20 +84,22 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 			out.Date = date.UTC()
 		}
 	}
-	// parse title
-	title = strings.TrimSpace(lines[0])
-
-	// parse body
-	out.Title, out.Message, out.Attrs = parseAttrs(lines[bodyStart:])
-	// validate
-	if out.Hash == "" || out.AuthorName == "" || out.AuthorEmail == "" || out.Title == "" {
+	// parse title and body
+	bodyLines := lines[bodyStart:]
+	if len(bodyLines) > 0 {
+		out.Title = strings.TrimSpace(bodyLines[0])
+		// pass bodyLines[1:] to parseAttrs since we already extracted the title
+		out.Message, out.Attrs = parseAttrs(bodyLines[1:])
+	}
+	// validate (allow empty title for jujutsu commits like "jj new")
+	if out.Hash == "" || out.AuthorName == "" || out.AuthorEmail == "" {
 		panicf(nil, "failed to parse commit with log:\n%v", strings.Join(backup, "\n"))
 	}
 	return out, nil
 }
 
 func parseAttrs(lines []string) (message string, attrs []KeyVal) {
-	// parse footer
+	// parse footer from bottom up
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
 		if strings.TrimSpace(line) == "" {
@@ -114,8 +118,9 @@ func parseAttrs(lines []string) (message string, attrs []KeyVal) {
 		return // empty body
 	}
 
+	// build message from remaining lines (excluding footers)
 	var b strings.Builder
-	for _, line := range lines[1:] {
+	for _, line := range lines {
 		b.WriteString(strings.TrimPrefix(line, "    "))
 		b.WriteByte('\n')
 	}
@@ -204,7 +209,11 @@ func jjGetWorkingCopy() (*Commit, error) {
 
 	// parse description like a commit body
 	descLines := strings.Split(descriptionBody, "\n")
-	title, message := parseAttrs(descLines)
+	title := ""
+	if len(descLines) > 0 {
+		title = strings.TrimSpace(descLines[0])
+	}
+	message, attrs := parseAttrs(descLines)
 
 	// create commit struct
 	commit := &Commit{
@@ -212,21 +221,10 @@ func jjGetWorkingCopy() (*Commit, error) {
 		ChangeID:    changeID,
 		Title:       title,
 		Message:     message,
+		Attrs:       attrs,
 		AuthorEmail: config.git.email,
 		AuthorName:  config.git.user,
 	}
-
-	// extract attributes (Remote-Ref, etc.) from description lines
-	// jj descriptions don't have leading whitespace, so use simpler regex
-	regexpJjKeyVal := regexp.MustCompile(`^([a-zA-Z0-9-]+):\s*(.*)$`)
-	for _, line := range descLines {
-		line = strings.TrimSpace(line)
-		if m := regexpJjKeyVal.FindStringSubmatch(line); m != nil {
-			key, val := strings.ToLower(m[1]), strings.TrimSpace(m[2])
-			commit.Attrs = append(commit.Attrs, KeyVal{key, val})
-		}
-	}
-
 	return commit, nil
 }
 

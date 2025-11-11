@@ -10,9 +10,12 @@ import (
 var (
 	regexpCommitHash = regexp.MustCompile(`^commit ([0-9a-f]{40})$`)
 	regexpAuthor     = regexp.MustCompile(`^Author: (.*) <(.*)>$`)
-	regexpDate       = regexp.MustCompile(`^Date:   (.*)$`)
-	regexpKeyVal     = regexp.MustCompile(`^\s+([a-zA-Z0-9-]+):(.*)$`)
-	dateLayouts      = []string{"Mon Jan _2 15:04:05 2006 -0700", "2006-01-02 15:04:05 -0700"}
+	regexpDate       = regexp.MustCompile(`^Date:\s+(.*)$`)
+
+	// "key: value"  or  "key = value"
+	// - must not start with space at the beginning of the line
+	regexpKeyVal = regexp.MustCompile(`^([a-zA-Z0-9-]+)\s*:\s*([^ ].+)$`)
+	dateLayouts  = []string{"Mon Jan _2 15:04:05 2006 -0700", "2006-01-02 15:04:05 -0700"}
 )
 
 func gitLogs(size int, extra ...string) (string, error) {
@@ -88,8 +91,12 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 	bodyLines := lines[bodyStart:]
 	if len(bodyLines) > 0 {
 		out.Title = strings.TrimSpace(bodyLines[0])
-		// pass bodyLines[1:] to parseAttrs since we already extracted the title
-		out.Message, out.Attrs = parseAttrs(bodyLines[1:])
+		bodyLines = bodyLines[1:]
+		// trim 4 spaces prefix from body lines before parsing trailers
+		for i := 0; i < len(bodyLines); i++ {
+			bodyLines[i] = strings.TrimPrefix(bodyLines[i], "    ")
+		}
+		out.Message, out.Attrs = parseTrailers(bodyLines)
 	}
 	// validate (allow empty title for jujutsu commits like "jj new")
 	if out.Hash == "" || out.AuthorName == "" || out.AuthorEmail == "" {
@@ -98,33 +105,46 @@ func parseLogsCommit(lines []string) (*Commit, error) {
 	return out, nil
 }
 
-func parseAttrs(lines []string) (message string, attrs []KeyVal) {
-	// parse footer from bottom up
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := lines[i]
-		if strings.TrimSpace(line) == "" {
-			continue // skip empty lines
+func parseTrailers(lines []string) (message string, attrs []KeyVal) {
+	// skip empty lines
+	for i := 0; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) != "" {
+			lines = lines[i:]
+			break
 		}
-		if m := regexpKeyVal.FindStringSubmatch(line); m != nil {
-			key, val := strings.ToLower(m[1]), strings.TrimSpace(m[2])
-			attrs = append(attrs, KeyVal{key, val})
-		} else {
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
 			lines = lines[:i+1]
 			break
 		}
 	}
 
-	if len(lines) == 0 {
-		return // empty body
+	// parse trailer from bottom up
+	i, line := 0, ""
+	for i = len(lines) - 1; i >= 0; i-- {
+		if m := regexpKeyVal.FindStringSubmatch(lines[i]); m != nil {
+			key, val := strings.ToLower(m[1]), strings.TrimSpace(m[2])
+			attrs = append(attrs, KeyVal{key, val})
+		} else {
+			line = lines[i]
+			break
+		}
 	}
 
-	// build message from remaining lines (excluding footers)
-	var b strings.Builder
-	for _, line := range lines {
-		b.WriteString(strings.TrimPrefix(line, "    "))
-		b.WriteByte('\n')
+	// require: trailers must be separated from body by a blank line
+	// stop at first non-trailer line, then validate the blank line above
+	if len(attrs) > 0 && line == "" {
+		if i >= 0 {
+			lines = lines[:i] // exclude the blank line
+		} else {
+			lines = nil
+		}
+	} else {
+		attrs = nil // no valid trailers
 	}
-	return strings.TrimSpace(b.String()), attrs
+
+	return strings.TrimSpace(strings.Join(lines, "\n")), attrs
 }
 
 // jjGetChangeID returns the jj change ID for a git commit hash
@@ -198,7 +218,7 @@ func parseJJWorkingCopy(checkOutput, infoOutput string) (*Commit, error) {
 	if len(descLines) > 0 {
 		title = strings.TrimSpace(descLines[0])
 	}
-	message, attrs := parseAttrs(descLines[1:])
+	message, attrs := parseTrailers(descLines[1:])
 
 	// create commit struct
 	commit := &Commit{

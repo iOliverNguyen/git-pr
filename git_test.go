@@ -211,6 +211,28 @@ Date:   2024-01-01 12:34:56 +0000
 		// verify date is in UTC
 		assert(t, c.Date.Location().String() == "UTC").Errorf("date location = %v, want UTC", c.Date.Location())
 	})
+
+	t.Run("ParseLogsTitleEmptyBodyWithFooter", func(t *testing.T) {
+		logs := `commit def456abc123789012345678901234567890abcd
+Author: Test User <test@example.com>
+Date:   Mon Jan 1 00:00:00 2024 +0000
+
+    feat: test empty body with footer
+
+    Remote-Ref: testuser/abc123de
+`
+
+		commits, err := parseLogs(logs)
+		assert(t, err == nil).Fatalf("parseLogs() error = %v", err)
+		assert(t, len(commits) == 1).Fatalf("expected 1 commit, got %d", len(commits))
+
+		c := commits[0]
+		assert(t, c.Hash == "def456abc123789012345678901234567890abcd").Errorf("hash = %q", c.Hash)
+		assert(t, c.Title == "feat: test empty body with footer").Errorf("title = %q", c.Title)
+		assert(t, c.Message == "").Errorf("message = %q, want empty", c.Message)
+		assert(t, c.GetRemoteRef() == "testuser/abc123de").Errorf("remote-ref = %q", c.GetRemoteRef())
+		assert(t, len(c.Attrs) == 1).Errorf("expected 1 attr, got %d: %v", len(c.Attrs), c.Attrs)
+	})
 }
 
 func TestParseJJWorkingCopy(t *testing.T) {
@@ -269,8 +291,8 @@ of the bug fix.`
 
 Description of the feature.
 
-    Remote-Ref: user/abc123
-    Tags: feature, test`
+Remote-Ref: user/abc123
+Tags: feature, test`
 		commit, err := parseJJWorkingCopy(checkOutput, infoOutput)
 		assert(t, err == nil).Fatalf("error = %v", err)
 		assert(t, commit != nil).Fatalf("expected commit, got nil")

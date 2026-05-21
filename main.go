@@ -48,18 +48,7 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	}
 
 	originMain := fmt.Sprintf("%v/%v", config.git.remote, config.git.remoteTrunk)
-	// in jj multi-workspace setups, the shared backing git repo's HEAD does not
-	// follow the current workspace. resolve @- via jj instead so we walk the
-	// stack of the workspace the user is actually in.
-	head := "HEAD"
-	if config.jj.enabled {
-		out, err := jj("log", "-r", "@-", "--no-graph", "-T", "commit_id")
-		if err != nil {
-			exitf("ERROR: failed to resolve jj @-: %v", err)
-		}
-		head = strings.TrimSpace(out)
-		debugf("resolved jj @- to %v", head)
-	}
+	head := resolveStackHead()
 	stackedCommits := must(getStackedCommits(originMain, head))
 	if len(stackedCommits) == 0 {
 		exitf("no commits to submit")
@@ -111,6 +100,9 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 		time.Sleep(time.Millisecond)
 	}
+	// rewords change commit_ids; in jj-workspace mode the captured `head` no
+	// longer maps to the rewritten chain, so re-resolve before the re-read.
+	head = resolveStackHead()
 	stackedCommits = must(getStackedCommits(originMain, head))
 
 	// checkpoint: rewrite
@@ -137,19 +129,35 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			}
 		}
 	}
+	// mark commits we won't push (other authors, unless --include-other-authors)
+	for _, commit := range stackedCommits {
+		shouldPush := isMyOwnCommit(commit) || config.includeOtherAuthors
+		if !shouldPush {
+			commit.Skip = true
+			author := coalesce(commit.AuthorEmail, "@unknown")
+			printf("skip \"%v\" (%v)\n", shortenTitle(commit.Title), author)
+		}
+	}
+
+	// fail loudly if any pushable commit slipped through the rewrite phase
+	// without a Remote-Ref. without this guard, git rejects the empty refspec
+	// inside a goroutine and the panic stack does not name the offending commit.
+	if missing := validateRemoteRefsBeforePush(stackedCommits); len(missing) > 0 {
+		exitf(`ERROR: %d commit(s) have no Remote-Ref after rewrite phase: %v
+
+This usually means the in-memory view of the stack drifted from what jj/git
+actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
+"git log -10" and the contents of .jj/repo/op_heads (if jj is in use).`,
+			len(missing), strings.Join(missing, ", "))
+	}
+
 	// push commits, concurrently
 	if config.dryRun {
 		printf("[DRY-RUN] Would push commits:\n")
 	}
 	var pushFns []func()
 	for _, commit := range stackedCommits {
-		// push my own commits
-		// and include others' commits if "--include-other-authors" is set
-		shouldPush := isMyOwnCommit(commit) || config.includeOtherAuthors
-		if !shouldPush {
-			commit.Skip = true
-			author := coalesce(commit.AuthorEmail, "@unknown")
-			printf("skip \"%v\" (%v)\n", shortenTitle(commit.Title), author)
+		if commit.Skip {
 			continue
 		}
 		logs, execFn := pushCommit(commit)
@@ -287,6 +295,42 @@ func parallelForEach[T any](items []T, fn func(T)) {
 		}()
 	}
 	wg.Wait()
+}
+
+// resolveStackHead returns the commit_id git-log should walk from when computing
+// the stack. In jj mode it queries jj's @- each time so the value reflects any
+// rewords/rebases performed since the previous call — in jj-workspace setups the
+// shared backing .git/HEAD does not follow the workspace, and the @- commit_id
+// captured before a reword pass becomes stale once jj rewrites the chain. In
+// plain git / git-branchless mode "HEAD" is sufficient because reword updates
+// HEAD to track the rewritten descendants.
+func resolveStackHead() string {
+	if !config.jj.enabled {
+		return "HEAD"
+	}
+	out, err := jj("log", "-r", "@-", "--no-graph", "-T", "commit_id")
+	if err != nil {
+		exitf("ERROR: failed to resolve jj @-: %v", err)
+	}
+	head := strings.TrimSpace(out)
+	debugf("resolved jj @- to %v", head)
+	return head
+}
+
+// validateRemoteRefsBeforePush returns the ShortHash of each non-skipped commit
+// that has no Remote-Ref attribute. An empty result means every pushable commit
+// has a ref and the push phase is safe to start.
+func validateRemoteRefsBeforePush(commits []*Commit) []string {
+	var missing []string
+	for _, c := range commits {
+		if c.Skip {
+			continue
+		}
+		if c.GetAttr(KeyRemoteRef) == "" {
+			missing = append(missing, c.ShortHash())
+		}
+	}
+	return missing
 }
 
 // rewordCommit updates a commit's message using jj describe or git reword

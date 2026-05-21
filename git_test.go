@@ -378,6 +378,64 @@ func TestFindPrevNonSkipped(t *testing.T) {
 	})
 }
 
+func TestValidateRemoteRefsBeforePush(t *testing.T) {
+	mk := func(hash string, skip bool, ref string) *Commit {
+		c := &Commit{Hash: hash + "00000000", Skip: skip}
+		if ref != "" {
+			c.SetAttr(KeyRemoteRef, ref)
+		}
+		return c
+	}
+
+	t.Run("empty slice returns nil", func(t *testing.T) {
+		got := validateRemoteRefsBeforePush(nil)
+		assert(t, got == nil).Errorf("want nil, got %v", got)
+	})
+
+	t.Run("all have refs returns nil", func(t *testing.T) {
+		stack := []*Commit{
+			mk("a1", false, "user/a1"),
+			mk("b1", false, "user/b1"),
+		}
+		got := validateRemoteRefsBeforePush(stack)
+		assert(t, got == nil).Errorf("want nil, got %v", got)
+	})
+
+	t.Run("one missing returns that shorthash", func(t *testing.T) {
+		stack := []*Commit{
+			mk("a1", false, "user/a1"),
+			mk("b1", false, ""), // missing
+			mk("c1", false, "user/c1"),
+		}
+		got := validateRemoteRefsBeforePush(stack)
+		assert(t, len(got) == 1).Fatalf("want 1, got %v", got)
+		assert(t, got[0] == "b1000000").Errorf("want b1000000, got %v", got[0])
+	})
+
+	t.Run("skipped missing-ref is not reported", func(t *testing.T) {
+		stack := []*Commit{
+			mk("a1", false, "user/a1"),
+			mk("b1", true, ""),  // skipped, no ref — should be ignored
+			mk("c1", false, ""), // not skipped, no ref — should be reported
+		}
+		got := validateRemoteRefsBeforePush(stack)
+		assert(t, len(got) == 1).Fatalf("want 1, got %v", got)
+		assert(t, got[0] == "c1000000").Errorf("want c1000000, got %v", got[0])
+	})
+
+	t.Run("multiple missing reported in stack order", func(t *testing.T) {
+		stack := []*Commit{
+			mk("a1", false, ""),
+			mk("b1", false, "user/b1"),
+			mk("c1", false, ""),
+			mk("d1", false, ""),
+		}
+		got := validateRemoteRefsBeforePush(stack)
+		assert(t, len(got) == 3).Fatalf("want 3, got %v", got)
+		assert(t, got[0] == "a1000000" && got[1] == "c1000000" && got[2] == "d1000000").Errorf("got %v", got)
+	})
+}
+
 func TestShortenTitle(t *testing.T) {
 	t.Run("short title unchanged", func(t *testing.T) {
 		title := "fix: bug"

@@ -319,6 +319,65 @@ Tags: feature, test`
 	})
 }
 
+func TestFindPrevNonSkipped(t *testing.T) {
+	// build helpers — each commit identified by Hash so failures are readable
+	mk := func(hash string, skip bool) *Commit {
+		return &Commit{Hash: hash + "00000000", Skip: skip}
+	}
+
+	t.Run("empty stack", func(t *testing.T) {
+		target := mk("a1", false)
+		assert(t, findPrevNonSkipped(nil, target) == nil).Errorf("want nil for empty stack")
+	})
+
+	t.Run("target not in stack", func(t *testing.T) {
+		a, b := mk("a1", false), mk("b1", false)
+		stack := []*Commit{a, b}
+		other := mk("c1", false)
+		assert(t, findPrevNonSkipped(stack, other) == nil).Errorf("want nil when target missing")
+	})
+
+	t.Run("single commit, no predecessor", func(t *testing.T) {
+		a := mk("a1", false)
+		stack := []*Commit{a}
+		assert(t, findPrevNonSkipped(stack, a) == nil).Errorf("want nil; only commit is target")
+	})
+
+	t.Run("all predecessors skipped", func(t *testing.T) {
+		a, b, c := mk("a1", true), mk("b1", true), mk("c1", false)
+		stack := []*Commit{a, b, c}
+		assert(t, findPrevNonSkipped(stack, c) == nil).Errorf("want nil; all predecessors skipped")
+	})
+
+	t.Run("immediate non-skipped predecessor", func(t *testing.T) {
+		a, b := mk("a1", false), mk("b1", false)
+		stack := []*Commit{a, b}
+		got := findPrevNonSkipped(stack, b)
+		assert(t, got == a).Errorf("want a, got %v", got)
+	})
+
+	t.Run("regression: skip-non-skip-skip-non-skip-target picks the latest non-skip", func(t *testing.T) {
+		// stack [A(skip), B, C, D, E] processing E should pick D, not B.
+		// the bug at main.go:222-228 picked B (first non-skip from the start).
+		a := mk("a1", true)
+		b := mk("b1", false)
+		c := mk("c1", false)
+		d := mk("d1", false)
+		e := mk("e1", false)
+		stack := []*Commit{a, b, c, d, e}
+		got := findPrevNonSkipped(stack, e)
+		assert(t, got == d).Errorf("want d (most recent non-skip), got %v", got)
+	})
+
+	t.Run("intermediate skip is hopped over", func(t *testing.T) {
+		// stack [A, B(skip), C] — for C, the predecessor should be A.
+		a, b, c := mk("a1", false), mk("b1", true), mk("c1", false)
+		stack := []*Commit{a, b, c}
+		got := findPrevNonSkipped(stack, c)
+		assert(t, got == a).Errorf("want a (skipping b), got %v", got)
+	})
+}
+
 func TestShortenTitle(t *testing.T) {
 	t.Run("short title unchanged", func(t *testing.T) {
 		title := "fix: bug"

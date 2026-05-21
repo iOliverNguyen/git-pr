@@ -119,18 +119,6 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		return
 	}
 
-	prevCommit := func(commit *Commit) (prev *Commit) {
-		for _, cm := range stackedCommits {
-			if cm == commit {
-				return prev
-			}
-			if cm.Skip {
-				continue
-			}
-			prev = cm
-		}
-		panic("not found")
-	}
 	pushCommit := func(commit *Commit) (logs string, execFunc func()) {
 		args := fmt.Sprintf("%v:refs/heads/%v", commit.ShortHash(), commit.GetAttr(KeyRemoteRef))
 		logs = fmt.Sprintf("push -f %v %v", config.git.remote, args)
@@ -141,10 +129,11 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		return logs, func() {
 			out := must(git("push", "-f", config.git.remote, args))
 			time.Sleep(1 * time.Second)
+			prev := findPrevNonSkipped(stackedCommits, commit)
 			if strings.Contains(out, "remote: Create a pull request") {
-				must(0, githubCreatePRForCommit(commit, prevCommit(commit)))
+				mustE(githubCreatePRForCommit(commit, prev))
 			} else {
-				must(0, githubPRUpdateBaseForCommit(commit, prevCommit(commit)))
+				mustE(githubPRUpdateBaseForCommit(commit, prev))
 			}
 		}
 	}
@@ -152,32 +141,24 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	if config.dryRun {
 		printf("[DRY-RUN] Would push commits:\n")
 	}
-	{
-		var wg sync.WaitGroup
-		for _, commit := range stackedCommits {
-			// push my own commits
-			// and include others' commits if "--include-other-authors" is set
-			shouldPush := isMyOwnCommit(commit) || config.includeOtherAuthors
-			if !shouldPush {
-				commit.Skip = true
-				author := coalesce(commit.AuthorEmail, "@unknown")
-				printf("skip \"%v\" (%v)\n", shortenTitle(commit.Title), author)
-				continue
-			}
-			wg.Add(1)
-			logs, execFunc := pushCommit(commit)
-			printf("%s\n", logs)
-			if !config.dryRun {
-				go func() {
-					defer wg.Done()
-					execFunc()
-				}()
-			} else {
-				wg.Done()
-			}
+	var pushFns []func()
+	for _, commit := range stackedCommits {
+		// push my own commits
+		// and include others' commits if "--include-other-authors" is set
+		shouldPush := isMyOwnCommit(commit) || config.includeOtherAuthors
+		if !shouldPush {
+			commit.Skip = true
+			author := coalesce(commit.AuthorEmail, "@unknown")
+			printf("skip \"%v\" (%v)\n", shortenTitle(commit.Title), author)
+			continue
 		}
-		wg.Wait()
+		logs, execFn := pushCommit(commit)
+		printf("%s\n", logs)
+		if !config.dryRun {
+			pushFns = append(pushFns, execFn)
+		}
 	}
+	parallelForEach(pushFns, func(fn func()) { fn() })
 
 	// checkpoint: push
 	if config.stopAfter == "push" {
@@ -210,28 +191,16 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		}
 		return
 	}
-	{
-		var wg sync.WaitGroup
-		for i := len(stackedCommits) - 1; i >= 0; i-- {
-			commit := stackedCommits[i]
-			if commit.PRNumber == 0 {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					var prev *Commit
-					for j := 0; j < i; j++ {
-						cm := stackedCommits[j]
-						if !cm.Skip {
-							prev = cm
-							break
-						}
-					}
-					commit.PRNumber = must(githubGetPRNumberForCommit(commit, prev))
-				}()
-			}
+	var needsPRNumber []*Commit
+	for _, commit := range stackedCommits {
+		if commit.PRNumber == 0 {
+			needsPRNumber = append(needsPRNumber, commit)
 		}
-		wg.Wait()
 	}
+	parallelForEach(needsPRNumber, func(commit *Commit) {
+		prev := findPrevNonSkipped(stackedCommits, commit)
+		commit.PRNumber = must(githubGetPRNumberForCommit(commit, prev))
+	})
 
 	// checkpoint: pr-create
 	if config.stopAfter == "pr-create" {
@@ -241,44 +210,38 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 
 	// update PRs with review link, concurrently
 	printf("\n")
-	{
-		var wg sync.WaitGroup
-		for _, commit := range stackedCommits {
-			if commit.Skip {
-				continue
-			}
-			wg.Add(1)
-			commit := commit
-			prURL := fmt.Sprintf("https://%v/%v/pull/%v", config.git.host, config.git.repo, commit.PRNumber)
-			printf("%v\n", prURL)
-			go func() {
-				defer wg.Done()
-
-				pr := must(githubGetPRByNumber(commit.PRNumber))
-				pullURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%v", config.git.host, config.git.repo, commit.PRNumber)
-
-				// generate the PR body with stack info
-				stackInfo := generateStackInfo(stackedCommits, commit)
-				body := generatePRBody(commit, pr.Body, stackInfo)
-
-				// update the PR
-				must(httpRequest("PATCH", pullURL, map[string]any{
-					"title": commit.Title,
-					"body":  body,
-				}))
-				isDraft := matchAnyPattern(config.draftPatterns, commit.Title)
-				if isDraft {
-					must(gh("pr", "ready", strconv.Itoa(commit.PRNumber), "--undo"))
-				} else {
-					must(gh("pr", "ready", strconv.Itoa(commit.PRNumber)))
-				}
-				if tags := commit.GetTags(config.tags...); len(tags) > 0 {
-					must(gh("pr", "edit", strconv.Itoa(commit.PRNumber), "--add-label", strings.Join(tags, ",")))
-				}
-			}()
+	var prBodyTargets []*Commit
+	for _, commit := range stackedCommits {
+		if commit.Skip {
+			continue
 		}
-		wg.Wait()
+		prURL := ghWebURL("pull/%v", commit.PRNumber)
+		printf("%v\n", prURL)
+		prBodyTargets = append(prBodyTargets, commit)
 	}
+	parallelForEach(prBodyTargets, func(commit *Commit) {
+		pr := must(githubGetPRByNumber(commit.PRNumber))
+		pullURL := ghAPIURL("pulls/%v", commit.PRNumber)
+
+		// generate the PR body with stack info
+		stackInfo := generateStackInfo(stackedCommits, commit)
+		body := generatePRBody(commit, pr.Body, stackInfo)
+
+		// update the PR
+		must(httpRequest("PATCH", pullURL, map[string]any{
+			"title": commit.Title,
+			"body":  body,
+		}))
+		isDraft := matchAnyPattern(config.draftPatterns, commit.Title)
+		if isDraft {
+			must(gh("pr", "ready", strconv.Itoa(commit.PRNumber), "--undo"))
+		} else {
+			must(gh("pr", "ready", strconv.Itoa(commit.PRNumber)))
+		}
+		if tags := commit.GetTags(config.tags...); len(tags) > 0 {
+			must(gh("pr", "edit", strconv.Itoa(commit.PRNumber), "--add-label", strings.Join(tags, ",")))
+		}
+	})
 }
 
 func findCommitsWithoutRemoteRef(commits []*Commit) iter.Seq[*Commit] {
@@ -294,6 +257,36 @@ func findCommitsWithoutRemoteRef(commits []*Commit) iter.Seq[*Commit] {
 			}
 		}
 	}
+}
+
+// findPrevNonSkipped returns the most-recent non-skipped commit strictly before
+// target in commits (ordered oldest→newest). Returns nil if no eligible
+// predecessor exists, including the case where target is not in commits.
+func findPrevNonSkipped(commits []*Commit, target *Commit) (prev *Commit) {
+	for _, cm := range commits {
+		if cm == target {
+			return prev
+		}
+		if cm.Skip {
+			continue
+		}
+		prev = cm
+	}
+	return nil
+}
+
+// parallelForEach runs fn concurrently for each item, waiting for all goroutines
+// to finish before returning. An empty slice is a no-op.
+func parallelForEach[T any](items []T, fn func(T)) {
+	var wg sync.WaitGroup
+	for _, item := range items {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn(item)
+		}()
+	}
+	wg.Wait()
 }
 
 // rewordCommit updates a commit's message using jj describe or git reword
@@ -330,7 +323,7 @@ func generateStackInfo(stackedCommits []*Commit, currentCommit *Commit) string {
 
 	for _, cm := range stackedCommits {
 		var cmRef string
-		cmURL := fmt.Sprintf("https://%v/%v/commit/%v", config.git.host, config.git.repo, cm.ShortHash())
+		cmURL := ghWebURL("commit/%v", cm.ShortHash())
 		switch {
 		case cm.PRNumber != 0 && cm.Hash == currentCommit.Hash:
 			cmRef = fmt.Sprintf("#%v (👉[%v](%v))", cm.PRNumber, cm.ShortHash(), cmURL)

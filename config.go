@@ -110,6 +110,17 @@ func LoadConfig() (config Config) {
 		if config.stopAfter == "" && os.Getenv("GIT_PR_STOP_AFTER") != "" {
 			config.stopAfter = os.Getenv("GIT_PR_STOP_AFTER")
 		}
+		validStopAfter := map[string]bool{
+			"":            true,
+			"validate":    true,
+			"get-commits": true,
+			"rewrite":     true,
+			"push":        true,
+			"pr-create":   true,
+		}
+		if !validStopAfter[config.stopAfter] {
+			exitf("ERROR: invalid --stop-after %q; must be one of: validate, get-commits, rewrite, push, pr-create", config.stopAfter)
+		}
 		// environment variables for draft settings
 		if !config.skipDraft && os.Getenv("GIT_PR_SKIP_DRAFT") == "1" {
 			config.skipDraft = true
@@ -121,20 +132,13 @@ func LoadConfig() (config Config) {
 		// configs from flags
 		config.timeout = time.Duration(*flagTimeout) * time.Second
 		if *flagSetTags != "" {
-			tags := saveGitPRConfig(strings.Split(*flagSetTags, ","))
+			tags := saveGitPRConfig(*flagSetTags)
 			printf("Set default tags: %v\n", strings.Join(tags, ", "))
 			os.Exit(0)
 		}
 		config.tags = getGitPRConfig()
 		if *flagTags != "" {
-			config.tags = nil // override default tags
-			tags := strings.Split(*flagTags, ",")
-			for _, tag := range tags {
-				tag = strings.TrimSpace(tag)
-				if tag != "" {
-					config.tags = append(config.tags, tag)
-				}
-			}
+			config.tags = parseCommaList(*flagTags) // override default tags
 		}
 
 		// read git config for skipDraft setting
@@ -154,15 +158,10 @@ func LoadConfig() (config Config) {
 			patternStr = `wip:*,draft:*,*[wip]*,*[draft]*` // default: wip/draft prefix or bracketed
 		}
 
-		// parse comma-separated patterns
-		patterns := strings.Split(patternStr, ",")
-		config.draftPatterns = make([]string, 0, len(patterns))
-		for _, p := range patterns {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				// validate pattern: only allow *, ?, and regular characters
-				if err := validateWildcardPattern(p); err != nil {
-					exitf(`ERROR: invalid wildcard pattern %q: %v
+		// parse comma-separated patterns and validate each
+		for _, p := range parseCommaList(patternStr) {
+			if err := validateWildcardPattern(p); err != nil {
+				exitf(`ERROR: invalid wildcard pattern %q: %v
 
 The pattern must be a valid wildcard pattern.
 Supported wildcards:
@@ -177,12 +176,13 @@ Example patterns:
 
 Note: Character ranges like [a-z] are NOT supported.
 `, p, err)
-				}
-				config.draftPatterns = append(config.draftPatterns, p)
 			}
+			config.draftPatterns = append(config.draftPatterns, p)
 		}
 	}
 	{ // detect repository by git, with jj-workspace fallback
+		// note: detection-phase calls below run before the package-level
+		// config is populated, so verbose logging is suppressed for them.
 		errMsg := `
 git-pr is a tool for submitting git commits as GitHub stacked pull requests (stacked PRs).
 
@@ -190,12 +190,12 @@ ERROR: You need to run it in a git repository with remote configured.
 
 For more information, see "git-pr --help".`
 
-		if output, err := _git("rev-parse", "--show-toplevel"); err == nil {
+		if output, err := git("rev-parse", "--show-toplevel"); err == nil {
 			config.repoDir = strings.TrimSpace(output)
-		} else if root, jerr := _jj("git", "root"); jerr == nil {
+		} else if root, jerr := jj("git", "root"); jerr == nil {
 			// jj workspace: no .git here, but jj knows where the backing one is
 			config.gitDir = strings.TrimSpace(root)
-			wsRoot, werr := _jj("workspace", "root")
+			wsRoot, werr := jj("workspace", "root")
 			if werr != nil {
 				exitf("ERROR: detected jj workspace but failed to resolve workspace root: %v", werr)
 			}
@@ -241,7 +241,7 @@ For more information, see "git-pr --help".`
 			}
 
 			// https://<host>/<user>/<repo>.git
-			regexpURL = regexp.MustCompile(`(\w+)\s+(https://(github\.com)/([^/\s]+)\/([^.\s]+)(\.git)?)`)
+			regexpURL = regexp.MustCompile(`(\w+)\s+(https://([^/\s]+)/([^/\s]+)/([^.\s]+)(\.git)?)`)
 			matches = regexpURL.FindStringSubmatch(line)
 			if len(matches) > 0 {
 				config.git.protocol = "https"
@@ -254,7 +254,7 @@ For more information, see "git-pr --help".`
 
 			exitf(`
 ERROR: failed to parse remote url:
-  expect git@<host>:<user>/<repo> or https://github.com/<user>/<repo> 
+  expect git@<host>:<user>/<repo> or https://<host>/<user>/<repo>
   got %q`, out)
 		}()
 	}
@@ -284,7 +284,7 @@ ERROR: failed to parse remote url:
 	}
 	{ // detect jj
 		if _, err := os.Stat(config.repoDir + "/.jj"); err == nil {
-			version, err := _jj("version")
+			version, err := jj("version")
 			if err == nil {
 				config.jj.enabled = true
 				config.jj.version = strings.TrimPrefix(version, "jj ")
@@ -293,7 +293,7 @@ ERROR: failed to parse remote url:
 		}
 	}
 	{ // detect git-branchless
-		version, err := _git("branchless", "--version")
+		version, err := git("branchless", "--version")
 		if err == nil {
 			config.bl.enabled = true
 			config.bl.version = strings.TrimSpace(version)
@@ -395,30 +395,16 @@ func validateConfig[T comparable](name string, value T) {
 	}
 }
 
-func getGitPRConfig() (tags []string) {
+func getGitPRConfig() []string {
 	rawTags, _ := git("config", "--get", gitconfigTags)
-	for _, tag := range strings.Split(rawTags, ",") {
-		tag = strings.TrimSpace(tag)
-		if tag != "" {
-			tags = append(tags, tag)
-		}
-	}
-	return tags
+	return parseCommaList(rawTags)
 }
 
-func saveGitPRConfig(tags []string) []string {
-	var xtags []string
-	for i := range tags {
-		tag := strings.TrimSpace(tags[i])
-		if tag != "" {
-			xtags = append(xtags, tag)
-		}
-	}
-	rawTags := strings.Join(xtags, ",")
-
+func saveGitPRConfig(rawTags string) []string {
+	tags := parseCommaList(rawTags)
 	_, _ = git("config", "--unset-all", gitconfigTags)
-	must(git("config", "--add", gitconfigTags, rawTags))
-	return xtags
+	must(git("config", "--add", gitconfigTags, strings.Join(tags, ",")))
+	return tags
 }
 
 // validateWildcardPattern checks if pattern contains only valid characters

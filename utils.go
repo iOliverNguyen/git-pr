@@ -137,6 +137,39 @@ func must[T any](v T, err error) T {
 	return v
 }
 
+// mustE panics if err is non-nil. Use it for calls that return only an error,
+// where must(0, fn()) would force a meaningless zero value.
+func mustE(err error) {
+	if err != nil {
+		panic(fmt.Sprintf("ERROR: %v", err))
+	}
+}
+
+// ghAPIURL builds a GitHub REST API URL for the configured repo, e.g.
+// ghAPIURL("pulls/%d", n) → https://api.<host>/repos/<repo>/pulls/<n>.
+func ghAPIURL(pathFmt string, args ...any) string {
+	return fmt.Sprintf("https://api.%v/repos/%v/%s", config.git.host, config.git.repo, fmt.Sprintf(pathFmt, args...))
+}
+
+// ghWebURL builds a GitHub web URL for the configured repo, e.g.
+// ghWebURL("pull/%d", n) → https://<host>/<repo>/pull/<n>.
+func ghWebURL(pathFmt string, args ...any) string {
+	return fmt.Sprintf("https://%v/%v/%s", config.git.host, config.git.repo, fmt.Sprintf(pathFmt, args...))
+}
+
+// parseCommaList splits s on commas, trims whitespace from each item, and drops
+// empty entries. Returns nil for an empty or whitespace-only input.
+func parseCommaList(s string) []string {
+	var out []string
+	for _, item := range strings.Split(s, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func panicf(err error, msg string, args ...any) {
 	if err != nil {
 		stderrf("ERROR: %v\n", err)

@@ -7,12 +7,9 @@ import (
 	"strings"
 )
 
-func git(args ...string) (string, error)  { return execCmd("git", args...) }
-func gh(args ...string) (string, error)   { return execCmd("gh", args...) }
-func jj(args ...string) (string, error)   { return execCmd("jj", args...) }
-func _git(args ...string) (string, error) { return execCmd("git", args...) }
-func _gh(args ...string) (string, error)  { return execCmd("gh", args...) }
-func _jj(args ...string) (string, error)  { return execCmd("jj", args...) }
+func git(args ...string) (string, error) { return execCmd("git", args...) }
+func gh(args ...string) (string, error)  { return execCmd("gh", args...) }
+func jj(args ...string) (string, error)  { return execCmd("jj", args...) }
 
 type execError struct {
 	exitCode int

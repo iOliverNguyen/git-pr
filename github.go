@@ -28,7 +28,7 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 	if commit.PRNumber != 0 {
 		return commit.PRNumber, nil
 	}
-	ghURL := fmt.Sprintf("https://api.%v/repos/%v/commits/%v/pulls?per_page=100", config.git.host, config.git.repo, commit.Hash)
+	ghURL := ghAPIURL("commits/%v/pulls?per_page=100", commit.Hash)
 	jsonBody, err := httpGET(ghURL)
 	switch {
 	case err != nil && strings.Contains(err.Error(), "No commit found"):
@@ -64,7 +64,7 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 }
 
 func githubGetPRByNumber(number int) (*PR, error) {
-	ghURL := fmt.Sprintf("https://api.%v/repos/%v/pulls/%d", config.git.host, config.git.repo, number)
+	ghURL := ghAPIURL("pulls/%d", number)
 	jsonBody, err := httpGET(ghURL)
 	if err != nil {
 		return nil, err

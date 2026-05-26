@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +23,18 @@ func gitLogs(size int, extra ...string) (string, error) {
 	args := []string{"log", fmt.Sprintf("-%v", size)}
 	args = append(args, extra...)
 	return git(args...)
+}
+
+// mustCommitCount returns the number of commits in (from, to], i.e., reachable
+// from `to` but not from `from`. Used pre-rewrite to capture depth-from-HEAD
+// markers that survive a rewrite pass (which changes hashes but not positions).
+func mustCommitCount(from, to string) int {
+	out := must(git("rev-list", "--count", fmt.Sprintf("%v..%v", from, to)))
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		exitf("ERROR: failed to parse commit count for %v..%v: %v", from, to, err)
+	}
+	return n
 }
 
 func parseLogs(logs string) (out CommitList, _ error) {
@@ -256,7 +269,12 @@ func jjGetWorkingCopy() (*Commit, error) {
 	return parseJJWorkingCopy(checkOutput, infoOutput)
 }
 
-func getStackedCommits(base, target string) ([]*Commit, error) {
+// getStackedCommits returns the commits in (base, target] ordered oldest→newest,
+// with empty/invalid commits filtered out. When includeJJWorkingCopy is true and
+// jj is enabled, jj's working copy (if non-empty with a description) is appended
+// as the newest commit. Range-mode callers should pass false to avoid pulling
+// in the working copy when the user has explicitly named a tip.
+func getStackedCommits(base, target string, includeJJWorkingCopy bool) ([]*Commit, error) {
 	logs, err := gitLogs(100, fmt.Sprintf("%v..%v", base, target))
 	if err != nil {
 		return nil, wrapf(err, "failed to find common ancestor for %v and %v", base, target)
@@ -291,7 +309,7 @@ func getStackedCommits(base, target string) ([]*Commit, error) {
 	result := revert(list)
 
 	// append jj working copy at the end (newest) if applicable
-	if config.jj.enabled {
+	if includeJJWorkingCopy && config.jj.enabled {
 		workingCopy, err := jjGetWorkingCopy()
 		if err != nil {
 			debugf("warning: failed to get jj working copy: %v", err)

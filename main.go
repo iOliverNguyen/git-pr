@@ -48,10 +48,43 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	}
 
 	originMain := fmt.Sprintf("%v/%v", config.git.remote, config.git.remoteTrunk)
-	head := resolveStackHead()
-	stackedCommits := must(getStackedCommits(originMain, head))
-	if len(stackedCommits) == 0 {
+	originMainHash := must(resolveRef(originMain))
+
+	// resolve the run's tip (top of the visible stack) and the user-selected
+	// base (the lower exclusive endpoint of what we actually push).
+	//
+	// - no positional args: selectedBase == originMain, fullTip == HEAD/@-.
+	// - range args:         selectedBase, fullTip come from config.commitRange.
+	//
+	// fullStack runs origin/<trunk>..fullTip and is used for stack-info
+	// rendering and for resolving the bottom PR's base. stackedCommits is
+	// what the rest of the pipeline operates on (validate → rewrite → push →
+	// PR create/update).
+	var selectedBase, fullTip string
+	var rangeBaseDepth, rangeTipDepth int // depths from HEAD, used to recover after rewrite
+	if config.commitRange.HasArg {
+		selectedBase = config.commitRange.BaseRef
+		fullTip = config.commitRange.TipRef
+		preRewriteHead := resolveStackHead()
+		rangeBaseDepth = mustCommitCount(selectedBase, preRewriteHead)
+		rangeTipDepth = mustCommitCount(fullTip, preRewriteHead)
+	} else {
+		selectedBase = originMain
+		fullTip = resolveStackHead()
+	}
+
+	fullStack := must(getStackedCommits(originMain, fullTip, !config.commitRange.HasArg))
+	if len(fullStack) == 0 {
 		exitf("no commits to submit")
+	}
+
+	stackedCommits := fullStack
+	if config.commitRange.HasArg {
+		stackedCommits = sliceFromBase(fullStack, selectedBase, originMainHash)
+		if len(stackedCommits) == 0 {
+			exitf("no commits to submit in range %v..%v (base %v not found on trunk..tip path)",
+				config.commitRange.BaseRef[:8], config.commitRange.TipRef[:8], config.commitRange.BaseRef[:8])
+		}
 	}
 	for _, commit := range stackedCommits {
 		printf("%s\n", commit)
@@ -102,13 +135,40 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	}
 	// rewords change commit_ids; in jj-workspace mode the captured `head` no
 	// longer maps to the rewritten chain, so re-resolve before the re-read.
-	head = resolveStackHead()
-	stackedCommits = must(getStackedCommits(originMain, head))
+	// In range mode the user's baseRef/tipRef hashes also drift because the
+	// rewritten chain has new hashes; recover via depth-from-HEAD captured
+	// pre-rewrite (rewrite preserves count and ordering, only hashes change).
+	postRewriteHead := resolveStackHead()
+	if config.commitRange.HasArg {
+		fullTip = must(resolveRef(fmt.Sprintf("%v~%v", postRewriteHead, rangeTipDepth)))
+		selectedBase = must(resolveRef(fmt.Sprintf("%v~%v", postRewriteHead, rangeBaseDepth)))
+	} else {
+		fullTip = postRewriteHead
+	}
+	fullStack = must(getStackedCommits(originMain, fullTip, !config.commitRange.HasArg))
+	stackedCommits = fullStack
+	if config.commitRange.HasArg {
+		stackedCommits = sliceFromBase(fullStack, selectedBase, originMainHash)
+	}
 
 	// checkpoint: rewrite
 	if config.stopAfter == "rewrite" {
 		printf("stopped after: rewrite\n")
 		return
+	}
+
+	// resolveBase determines the PR base branch for a given selected commit:
+	//   1. the predecessor's Remote-Ref if a non-skipped predecessor exists
+	//      in stackedCommits (normal stack-linkage case);
+	//   2. otherwise walk fullStack to find the commit just before this one
+	//      and use that commit's Remote-Ref if present (range-mode
+	//      bottom-of-selection: anchor onto an existing PR);
+	//   3. otherwise the remote trunk.
+	resolveBase := func(commit *Commit) string {
+		if prev := findPrevNonSkipped(stackedCommits, commit); prev != nil {
+			return prev.GetRemoteRef()
+		}
+		return resolveBaseForBottom(fullStack, commit, config.git.remoteTrunk)
 	}
 
 	pushCommit := func(commit *Commit) (logs string, execFunc func()) {
@@ -121,11 +181,11 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 		return logs, func() {
 			out := must(git("push", "-f", config.git.remote, args))
 			time.Sleep(1 * time.Second)
-			prev := findPrevNonSkipped(stackedCommits, commit)
+			base := resolveBase(commit)
 			if strings.Contains(out, "remote: Create a pull request") {
-				mustE(githubCreatePRForCommit(commit, prev))
+				mustE(githubCreatePRForCommit(commit, base))
 			} else {
-				mustE(githubPRUpdateBaseForCommit(commit, prev))
+				mustE(githubPRUpdateBaseForCommit(commit, base))
 			}
 		}
 	}
@@ -176,9 +236,15 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 
 	// checkout the latest stacked commit
 	if !config.dryRun {
-		if config.jj.enabled {
+		switch {
+		case config.jj.enabled:
 			debugf("skipping git checkout in jj repo (jj manages working copy)")
-		} else {
+		case config.commitRange.HasArg:
+			// the user asked for a specific range; leave HEAD where it was so
+			// we don't silently move HEAD below the original tip when the
+			// selected tip is not at HEAD.
+			debugf("skipping git checkout in range mode (preserving HEAD)")
+		default:
 			must(git("checkout", stackedCommits[len(stackedCommits)-1].Hash))
 		}
 	}
@@ -206,9 +272,24 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 		}
 	}
 	parallelForEach(needsPRNumber, func(commit *Commit) {
-		prev := findPrevNonSkipped(stackedCommits, commit)
-		commit.PRNumber = must(githubGetPRNumberForCommit(commit, prev))
+		commit.PRNumber = must(githubGetPRNumberForCommit(commit, resolveBase(commit)))
 	})
+
+	if config.commitRange.HasArg {
+		// in range mode, look up PR numbers for fullStack commits below the
+		// selected range so stack-info bullets render existing PR links instead
+		// of falling back to "no PR yet" formatting. lookup-only — never
+		// creates a PR for a commit outside the selected range.
+		var ancillary []*Commit
+		for _, cm := range fullStack {
+			if cm.PRNumber == 0 && cm.GetRemoteRef() != "" {
+				ancillary = append(ancillary, cm)
+			}
+		}
+		parallelForEach(ancillary, func(commit *Commit) {
+			commit.PRNumber = githubLookupPRNumber(commit)
+		})
+	}
 
 	// checkpoint: pr-create
 	if config.stopAfter == "pr-create" {
@@ -231,8 +312,10 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 		pr := must(githubGetPRByNumber(commit.PRNumber))
 		pullURL := ghAPIURL("pulls/%v", commit.PRNumber)
 
-		// generate the PR body with stack info
-		stackInfo := generateStackInfo(stackedCommits, commit)
+		// generate the PR body with stack info — render the full chain from
+		// trunk up to the selected tip, so PR bodies of selected commits show
+		// their position in the broader stack (not just the selected range).
+		stackInfo := generateStackInfo(fullStack, commit)
 		body := generatePRBody(commit, pr.Body, stackInfo)
 
 		// update the PR
@@ -281,6 +364,43 @@ func findPrevNonSkipped(commits []*Commit, target *Commit) (prev *Commit) {
 		prev = cm
 	}
 	return nil
+}
+
+// sliceFromBase returns the suffix of fullStack strictly after the commit with
+// hash == baseHash. When baseHash equals originMainHash, the entire fullStack
+// is returned (origin/<trunk> is exclusive and thus never appears in
+// fullStack). Returns nil if baseHash is neither originMainHash nor present in
+// fullStack — that case signals "user-supplied base is not on the trunk..tip
+// path".
+func sliceFromBase(fullStack []*Commit, baseHash, originMainHash string) []*Commit {
+	if baseHash == originMainHash {
+		return fullStack
+	}
+	for i, cm := range fullStack {
+		if cm.Hash == baseHash {
+			return fullStack[i+1:]
+		}
+	}
+	return nil
+}
+
+// resolveBaseForBottom returns the branch the bottommost selected PR should
+// base on. It walks fullStack to find the commit immediately before bottom and
+// returns that commit's Remote-Ref if it has one (i.e., the parent is already a
+// PR), otherwise the remote trunk. Used to preserve stack relationships when
+// pushing a partial range over an existing stack.
+func resolveBaseForBottom(fullStack []*Commit, bottom *Commit, trunk string) string {
+	var prev *Commit
+	for _, cm := range fullStack {
+		if cm.Hash == bottom.Hash {
+			break
+		}
+		prev = cm
+	}
+	if ref := prev.GetRemoteRef(); ref != "" {
+		return ref
+	}
+	return trunk
 }
 
 // parallelForEach runs fn concurrently for each item, waiting for all goroutines

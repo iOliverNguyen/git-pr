@@ -72,11 +72,27 @@ git pr
 Check out the last commit in your stacked commits and call `git pr` to push the stack to GitHub, one PR for each commit.
 Add `[draft]` to the commit title to mark it as draft.
 
+### Selecting a range
+
+By default `git pr` pushes every commit between the remote trunk and `HEAD`. You can also push a specific subset by passing a positional argument:
+
+```sh
+git pr BASE..TIP   # push the commits in BASE..TIP as stacked PRs
+git pr <commit>    # push exactly that one commit as a single PR
+```
+
+When you push only part of an existing stack, the bottommost selected PR is automatically based on the *previous* commit's PR branch if that commit already has a PR; otherwise it falls back to the remote trunk. Stack-info in each PR body shows the full chain from trunk up to the selected tip; PRs outside the selected range are left untouched.
+
 ### Arguments
 
 ```sh
 $ git-pr --help
-Usage: git pr [OPTIONS]
+Usage: git pr [OPTIONS] [RANGE]
+
+RANGE may be:
+  (omitted)        Push origin/<trunk>..HEAD as stacked PRs (default).
+  BASE..TIP        Push the commits in the BASE..TIP range as stacked PRs.
+  COMMIT           Push exactly that one commit as a single PR.
   -default-tags string
     	Set default tags for the current repository (comma separated)
   -draft-pattern string

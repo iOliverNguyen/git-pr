@@ -40,6 +40,17 @@ type Config struct {
 	skipDraft     bool     // flag: skip draft commits by default
 	includeDraft  bool     // flag: explicitly include draft commits (highest precedence)
 	draftPatterns []string // wildcard patterns for draft detection (case-insensitive)
+
+	commitRange ConfigRange // positional args: optional commit selection
+}
+
+// ConfigRange holds the user-supplied commit selection from positional args.
+// HasArg=false means "use default origin/<trunk>..HEAD"; otherwise BaseRef and
+// TipRef are resolved commit hashes (not symbolic refs).
+type ConfigRange struct {
+	HasArg  bool
+	BaseRef string // resolved 40-char commit hash for the base (exclusive)
+	TipRef  string // resolved 40-char commit hash for the tip (inclusive)
 }
 
 type ConfigGit struct {
@@ -90,7 +101,12 @@ func LoadConfig() (config Config) {
 	flagDraftPattern := flag.String("draft-pattern", "", "Wildcard pattern(s) for draft detection (default: wip:*,draft:*,*[wip]*,*[draft]*; comma-separated)")
 
 	{ // parse flags
-		usage := "Usage: git pr [OPTIONS]"
+		usage := `Usage: git pr [OPTIONS] [RANGE]
+
+RANGE may be:
+  (omitted)        Push origin/<trunk>..HEAD as stacked PRs (default).
+  BASE..TIP        Push the commits in the BASE..TIP range as stacked PRs.
+  COMMIT           Push exactly that one commit as a single PR.`
 		flag.Usage = func() {
 			printf("%s\n", usage)
 			flag.PrintDefaults()
@@ -343,9 +359,68 @@ Hint: use github cli to login to your account:
 		}
 	}
 
+	{ // parse positional args for commit range selection
+		// done after repo/jj detection so `git rev-parse` works inside jj
+		// workspaces (which need GIT_DIR set above).
+		args := flag.Args()
+		switch len(args) {
+		case 0:
+			// default behavior, no positional args
+
+		case 1:
+			arg := args[0]
+			if strings.Contains(arg, "...") {
+				exitf("ERROR: symmetric-difference range %q is not supported; use BASE..TIP instead", arg)
+			}
+			if strings.Contains(arg, "..") {
+				parts := strings.SplitN(arg, "..", 2)
+				if parts[0] == "" || parts[1] == "" {
+					exitf("ERROR: invalid range %q; expected BASE..TIP with both endpoints non-empty", arg)
+				}
+				baseHash, err := resolveRef(parts[0])
+				if err != nil {
+					exitf("ERROR: failed to resolve base ref %q: %v", parts[0], err)
+				}
+				tipHash, err := resolveRef(parts[1])
+				if err != nil {
+					exitf("ERROR: failed to resolve tip ref %q: %v", parts[1], err)
+				}
+				config.commitRange = ConfigRange{HasArg: true, BaseRef: baseHash, TipRef: tipHash}
+			} else {
+				tipHash, err := resolveRef(arg)
+				if err != nil {
+					exitf("ERROR: failed to resolve commit %q: %v", arg, err)
+				}
+				baseHash, err := resolveRef(tipHash + "^")
+				if err != nil {
+					exitf("ERROR: failed to resolve parent of %q: %v", arg, err)
+				}
+				config.commitRange = ConfigRange{HasArg: true, BaseRef: baseHash, TipRef: tipHash}
+			}
+
+		default:
+			exitf("ERROR: too many positional args (got %d, want at most 1): %v\n\n"+
+				"Supported forms:\n"+
+				"  git pr                 # default: origin/<trunk>..HEAD\n"+
+				"  git pr BASE..TIP       # push a contiguous range\n"+
+				"  git pr COMMIT          # push a single commit as one PR", len(args), args)
+		}
+	}
+
 	config.gh.host = config.git.host // assume github.com
 	config.gh.repo = config.git.repo // assume org/repo
 	return config
+}
+
+// resolveRef resolves a git ref string (symbolic name, hash, HEAD~N, etc.) to
+// a full 40-char commit hash. `^{commit}` peels tags and rejects non-commit
+// objects.
+func resolveRef(ref string) (string, error) {
+	out, err := git("rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 type GitHubConfigHostsFile map[string]*GitHubConfigHost

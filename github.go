@@ -24,7 +24,7 @@ type PR struct {
 	UpdatedAt *time.Time
 }
 
-func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
+func githubGetPRNumberForCommit(commit *Commit, base string) (int, error) {
 	if commit.PRNumber != 0 {
 		return commit.PRNumber, nil
 	}
@@ -56,11 +56,42 @@ func githubGetPRNumberForCommit(commit, prev *Commit) (int, error) {
 	}
 
 	// the commit was pushed and got "Everything up-to-date", try creating new pr
-	err = githubCreatePRForCommit(commit, prev)
+	err = githubCreatePRForCommit(commit, base)
 	if err != nil {
 		return 0, err
 	}
 	return commit.PRNumber, nil
+}
+
+// githubLookupPRNumber returns the existing PR number for a commit by querying
+// the GitHub API and matching against the commit's Remote-Ref branch. Returns
+// 0 if no PR is found or the lookup fails. Unlike githubGetPRNumberForCommit,
+// this never creates a PR — used to populate PRNumber for commits in fullStack
+// that are outside the selected push range, so stack-info bullets render the
+// real PR links even for non-selected commits.
+func githubLookupPRNumber(commit *Commit) int {
+	if commit.PRNumber != 0 {
+		return commit.PRNumber
+	}
+	remoteRef := commit.GetRemoteRef()
+	if remoteRef == "" {
+		return 0
+	}
+	ghURL := ghAPIURL("commits/%v/pulls?per_page=100", commit.Hash)
+	jsonBody, err := httpGET(ghURL)
+	if err != nil {
+		return 0
+	}
+	var out []PR
+	if err := json.Unmarshal(jsonBody, &out); err != nil {
+		return 0
+	}
+	for _, pr := range out {
+		if pr.Head.Ref == remoteRef {
+			return pr.Number
+		}
+	}
+	return 0
 }
 
 func githubGetPRByNumber(number int) (*PR, error) {
@@ -81,11 +112,7 @@ func githubGetPRByNumber(number int) (*PR, error) {
 
 var regexpPRURL = regexp.MustCompile(`/pull/(\d+)`)
 
-func githubCreatePRForCommit(commit *Commit, prev *Commit) error {
-	base := config.git.remoteTrunk
-	if prev != nil {
-		base = prev.GetRemoteRef()
-	}
+func githubCreatePRForCommit(commit *Commit, base string) error {
 	args := []string{"pr", "create", "--title", commit.Title, "--body", "", "--head", commit.GetRemoteRef(), "--base", base}
 	if tags := commit.GetTags(config.tags...); len(tags) > 0 {
 		args = append(args, "--label", strings.Join(tags, ","))
@@ -107,9 +134,8 @@ func githubCreatePRForCommit(commit *Commit, prev *Commit) error {
 	return nil
 }
 
-func githubPRUpdateBaseForCommit(commit *Commit, prev *Commit) error {
-	base := xif(prev != nil, prev.GetRemoteRef(), config.git.remoteTrunk)
-	prNumber, err := githubGetPRNumberForCommit(commit, prev)
+func githubPRUpdateBaseForCommit(commit *Commit, base string) error {
+	prNumber, err := githubGetPRNumberForCommit(commit, base)
 	if err != nil {
 		return err
 	}

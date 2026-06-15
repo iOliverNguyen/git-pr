@@ -47,11 +47,22 @@ type Config struct {
 // ConfigRange holds the user-supplied commit selection from positional args.
 // HasArg=false means "use default origin/<trunk>..HEAD"; otherwise BaseRef and
 // TipRef are resolved commit hashes (not symbolic refs).
+//
+// Selected is non-empty only for the multi-commit form (`git pr A B C`): it
+// holds the resolved commit hashes the user named, possibly non-contiguous and
+// in any order. In that case BaseRef/TipRef are left empty here and computed in
+// main once the visible stack is known (the [lowest..highest] span); the
+// in-span commits the user did NOT name are marked Skip during processing.
 type ConfigRange struct {
-	HasArg  bool
-	BaseRef string // resolved 40-char commit hash for the base (exclusive)
-	TipRef  string // resolved 40-char commit hash for the tip (inclusive)
+	HasArg   bool
+	BaseRef  string   // resolved 40-char commit hash for the base (exclusive)
+	TipRef   string   // resolved 40-char commit hash for the tip (inclusive)
+	Selected []string // multi-commit form: resolved hashes of the named commits
 }
+
+// IsMulti reports whether the user passed the multi-commit form (2+ individual
+// commits) rather than the default, single-commit, or range form.
+func (r ConfigRange) IsMulti() bool { return len(r.Selected) > 0 }
 
 type ConfigGit struct {
 	enabled bool
@@ -101,12 +112,16 @@ func LoadConfig() (config Config) {
 	flagDraftPattern := flag.String("draft-pattern", "", "Wildcard pattern(s) for draft detection (default: wip:*,draft:*,*[wip]*,*[draft]*; comma-separated)")
 
 	{ // parse flags
-		usage := `Usage: git pr [OPTIONS] [RANGE]
+		usage := `Usage: git pr [OPTIONS] [COMMITS]
 
-RANGE may be:
+COMMITS may be:
   (omitted)        Push origin/<trunk>..HEAD as stacked PRs (default).
   BASE..TIP        Push the commits in the BASE..TIP range as stacked PRs.
-  COMMIT           Push exactly that one commit as a single PR.`
+  COMMIT           Push exactly that one commit as a single PR.
+  COMMIT...        Push the named commits (2+) as stacked PRs; commits between
+                   them on the stack are skipped. Args may be in any order.
+
+A COMMIT may be a git ref/hash, or (in a jj repo) a jj change-id.`
 		flag.Usage = func() {
 			printf("%s\n", usage)
 			flag.PrintDefaults()
@@ -363,47 +378,63 @@ Hint: use github cli to login to your account:
 		// done after repo/jj detection so `git rev-parse` works inside jj
 		// workspaces (which need GIT_DIR set above).
 		args := flag.Args()
-		switch len(args) {
-		case 0:
+		switch {
+		case len(args) == 0:
 			// default behavior, no positional args
 
-		case 1:
+		case len(args) == 1 && strings.Contains(args[0], ".."):
 			arg := args[0]
 			if strings.Contains(arg, "...") {
 				exitf("ERROR: symmetric-difference range %q is not supported; use BASE..TIP instead", arg)
 			}
-			if strings.Contains(arg, "..") {
-				parts := strings.SplitN(arg, "..", 2)
-				if parts[0] == "" || parts[1] == "" {
-					exitf("ERROR: invalid range %q; expected BASE..TIP with both endpoints non-empty", arg)
+			parts := strings.SplitN(arg, "..", 2)
+			if parts[0] == "" || parts[1] == "" {
+				exitf("ERROR: invalid range %q; expected BASE..TIP with both endpoints non-empty", arg)
+			}
+			baseHash, err := resolveCommitArg(parts[0], config.jj.enabled)
+			if err != nil {
+				exitf("ERROR: failed to resolve base ref %q: %v", parts[0], err)
+			}
+			tipHash, err := resolveCommitArg(parts[1], config.jj.enabled)
+			if err != nil {
+				exitf("ERROR: failed to resolve tip ref %q: %v", parts[1], err)
+			}
+			config.commitRange = ConfigRange{HasArg: true, BaseRef: baseHash, TipRef: tipHash}
+
+		case len(args) == 1:
+			arg := args[0]
+			tipHash, err := resolveCommitArg(arg, config.jj.enabled)
+			if err != nil {
+				exitf("ERROR: failed to resolve commit %q: %v", arg, err)
+			}
+			baseHash, err := resolveRef(tipHash + "^")
+			if err != nil {
+				exitf("ERROR: failed to resolve parent of %q: %v", arg, err)
+			}
+			config.commitRange = ConfigRange{HasArg: true, BaseRef: baseHash, TipRef: tipHash}
+
+		default:
+			// multi-commit form: 2+ individual commits, possibly non-contiguous
+			// and in any order. resolve each to a hash here; the [lowest..highest]
+			// span and the in-span skips are computed in main against the stack.
+			var selected []string
+			seen := map[string]bool{}
+			for _, arg := range args {
+				if strings.Contains(arg, "..") {
+					exitf("ERROR: cannot combine a range %q with other commit arguments;\n"+
+						"pass either a single BASE..TIP range or a list of individual commits", arg)
 				}
-				baseHash, err := resolveRef(parts[0])
-				if err != nil {
-					exitf("ERROR: failed to resolve base ref %q: %v", parts[0], err)
-				}
-				tipHash, err := resolveRef(parts[1])
-				if err != nil {
-					exitf("ERROR: failed to resolve tip ref %q: %v", parts[1], err)
-				}
-				config.commitRange = ConfigRange{HasArg: true, BaseRef: baseHash, TipRef: tipHash}
-			} else {
-				tipHash, err := resolveRef(arg)
+				hash, err := resolveCommitArg(arg, config.jj.enabled)
 				if err != nil {
 					exitf("ERROR: failed to resolve commit %q: %v", arg, err)
 				}
-				baseHash, err := resolveRef(tipHash + "^")
-				if err != nil {
-					exitf("ERROR: failed to resolve parent of %q: %v", arg, err)
+				if seen[hash] {
+					continue // dedup repeated args / change-ids that map to the same commit
 				}
-				config.commitRange = ConfigRange{HasArg: true, BaseRef: baseHash, TipRef: tipHash}
+				seen[hash] = true
+				selected = append(selected, hash)
 			}
-
-		default:
-			exitf("ERROR: too many positional args (got %d, want at most 1): %v\n\n"+
-				"Supported forms:\n"+
-				"  git pr                 # default: origin/<trunk>..HEAD\n"+
-				"  git pr BASE..TIP       # push a contiguous range\n"+
-				"  git pr COMMIT          # push a single commit as one PR", len(args), args)
+			config.commitRange = ConfigRange{HasArg: true, Selected: selected}
 		}
 	}
 
@@ -421,6 +452,50 @@ func resolveRef(ref string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// resolveCommitArg resolves a user-supplied positional commit argument to a full
+// 40-char git commit hash. In jj repos it first tries to resolve the argument as
+// a jj revision, so jj change-ids (e.g. "yrvptmm") and other revsets work, and
+// falls back to git resolution for things jj does not recognize (raw git refs,
+// HEAD~N, tags). Outside jj it resolves via git only.
+//
+// jjEnabled is passed explicitly rather than read from the package-level config:
+// this is called from within LoadConfig, whose named return shadows the global
+// config, so config.jj.enabled is not yet visible here (see config.go detection
+// block for the same shadowing trap).
+func resolveCommitArg(arg string, jjEnabled bool) (string, error) {
+	if jjEnabled {
+		if hash, err := resolveJJRevision(arg); err == nil {
+			return hash, nil
+		}
+	}
+	return resolveRef(arg)
+}
+
+// resolveJJRevision resolves a single jj revision (change-id, commit-id,
+// bookmark, etc.) to its git commit hash. It errors unless the revision matches
+// exactly one commit, so an ambiguous change-id prefix is rejected rather than
+// silently picking one.
+func resolveJJRevision(rev string) (string, error) {
+	out, err := jj("log", "-r", rev, "--no-graph", "-T", `commit_id ++ "\n"`)
+	if err != nil {
+		return "", err
+	}
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	switch len(lines) {
+	case 0:
+		return "", errorf("jj revision %q matched no commits", rev)
+	case 1:
+		return lines[0], nil
+	default:
+		return "", errorf("jj revision %q matched %d commits; expected exactly one", rev, len(lines))
+	}
 }
 
 type GitHubConfigHostsFile map[string]*GitHubConfigHost

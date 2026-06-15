@@ -378,6 +378,117 @@ func TestFindPrevNonSkipped(t *testing.T) {
 	})
 }
 
+func TestRecoverRangeTip(t *testing.T) {
+	t.Run("jj mode resolves tip by change-id and never uses depth", func(t *testing.T) {
+		// regression: in jj mode an explicit BASE..TIP must be recovered from the
+		// tip's stable change-id, NOT from @-+depth (which pushed the @- sibling
+		// stack and ignored the positional range).
+		const wantTip = "atipcommithash00000000000000000000000000"
+		changeIDCalledWith := ""
+		resolveChangeID := func(id string) (string, error) {
+			changeIDCalledWith = id
+			return wantTip, nil
+		}
+		resolveDepth := func(head string, depth int) (string, error) {
+			t.Fatalf("depth resolver must not be called in jj mode (head=%q depth=%d)", head, depth)
+			return "", nil
+		}
+		got, err := recoverRangeTip(true, "tipchangeid", "ctipfromat-", 6, resolveChangeID, resolveDepth)
+		assert(t, err == nil).Fatalf("unexpected error: %v", err)
+		assert(t, got == wantTip).Errorf("tip = %q, want %q", got, wantTip)
+		assert(t, changeIDCalledWith == "tipchangeid").Errorf("change-id resolver called with %q, want %q", changeIDCalledWith, "tipchangeid")
+	})
+
+	t.Run("non-jj mode resolves tip by depth-from-HEAD and never uses change-id", func(t *testing.T) {
+		// git-branchless: reword moves HEAD, so depth-from-HEAD is the correct,
+		// stable identity; the change-id resolver must not be touched.
+		const wantTip = "depthrecoveredhash0000000000000000000000"
+		var gotHead string
+		var gotDepth int
+		resolveChangeID := func(id string) (string, error) {
+			t.Fatalf("change-id resolver must not be called in non-jj mode (id=%q)", id)
+			return "", nil
+		}
+		resolveDepth := func(head string, depth int) (string, error) {
+			gotHead, gotDepth = head, depth
+			return wantTip, nil
+		}
+		got, err := recoverRangeTip(false, "ignored-change-id", "HEAD", 3, resolveChangeID, resolveDepth)
+		assert(t, err == nil).Fatalf("unexpected error: %v", err)
+		assert(t, got == wantTip).Errorf("tip = %q, want %q", got, wantTip)
+		assert(t, gotHead == "HEAD").Errorf("depth resolver head = %q, want %q", gotHead, "HEAD")
+		assert(t, gotDepth == 3).Errorf("depth resolver depth = %d, want 3", gotDepth)
+	})
+
+	t.Run("propagates resolver error", func(t *testing.T) {
+		wantErr := errorf("boom")
+		resolveChangeID := func(string) (string, error) { return "", wantErr }
+		resolveDepth := func(string, int) (string, error) { t.Fatal("unused"); return "", nil }
+		_, err := recoverRangeTip(true, "id", "head", 1, resolveChangeID, resolveDepth)
+		assert(t, err == wantErr).Errorf("err = %v, want %v", err, wantErr)
+	})
+}
+
+func TestOrderSelection(t *testing.T) {
+	// stack ordered oldest→newest: A B C D E
+	mk := func(hash string) *Commit { return &Commit{Hash: hash} }
+	a, b, c, d, e := mk("a"), mk("b"), mk("c"), mk("d"), mk("e")
+	stack := []*Commit{a, b, c, d, e}
+
+	t.Run("contiguous selection", func(t *testing.T) {
+		lo, hi, err := orderSelection(stack, []string{"b", "c"})
+		assert(t, err == nil).Errorf("unexpected error: %v", err)
+		assert(t, lo == 1 && hi == 2).Errorf("lo=%d hi=%d, want 1,2", lo, hi)
+	})
+
+	t.Run("gapped selection spans the gap", func(t *testing.T) {
+		// selecting B and D leaves C in the span (to be skipped by the caller)
+		lo, hi, err := orderSelection(stack, []string{"b", "d"})
+		assert(t, err == nil).Errorf("unexpected error: %v", err)
+		assert(t, lo == 1 && hi == 3).Errorf("lo=%d hi=%d, want 1,3", lo, hi)
+	})
+
+	t.Run("order of args does not matter", func(t *testing.T) {
+		lo, hi, err := orderSelection(stack, []string{"e", "a", "c"})
+		assert(t, err == nil).Errorf("unexpected error: %v", err)
+		assert(t, lo == 0 && hi == 4).Errorf("lo=%d hi=%d, want 0,4", lo, hi)
+	})
+
+	t.Run("single commit", func(t *testing.T) {
+		lo, hi, err := orderSelection(stack, []string{"c"})
+		assert(t, err == nil).Errorf("unexpected error: %v", err)
+		assert(t, lo == 2 && hi == 2).Errorf("lo=%d hi=%d, want 2,2", lo, hi)
+	})
+
+	t.Run("unknown commit errors", func(t *testing.T) {
+		_, _, err := orderSelection(stack, []string{"b", "z"})
+		assert(t, err != nil).Errorf("want error for hash not in stack")
+	})
+
+	t.Run("empty selection errors", func(t *testing.T) {
+		_, _, err := orderSelection(stack, nil)
+		assert(t, err != nil).Errorf("want error for empty selection")
+	})
+}
+
+func TestMarkUnselected(t *testing.T) {
+	mk := func(hash string) *Commit { return &Commit{Hash: hash, Title: hash} }
+
+	t.Run("skips commits not in the selected set", func(t *testing.T) {
+		a, b, c := mk("a"), mk("b"), mk("c")
+		markUnselected([]*Commit{a, b, c}, map[string]bool{"a": true, "c": true}, false)
+		assert(t, !a.Skip).Errorf("a should not be skipped")
+		assert(t, b.Skip).Errorf("b should be skipped (not selected)")
+		assert(t, !c.Skip).Errorf("c should not be skipped")
+	})
+
+	t.Run("leaves already-skipped commits skipped", func(t *testing.T) {
+		a := &Commit{Hash: "a", Skip: true}
+		markUnselected([]*Commit{a}, map[string]bool{"a": true}, false)
+		assert(t, a.Skip).Errorf("pre-skipped commit should remain skipped")
+	})
+}
+
 func TestValidateRemoteRefsBeforePush(t *testing.T) {
 	mk := func(hash string, skip bool, ref string) *Commit {
 		c := &Commit{Hash: hash + "00000000", Skip: skip}

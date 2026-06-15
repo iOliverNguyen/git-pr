@@ -60,14 +60,57 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	// rendering and for resolving the bottom PR's base. stackedCommits is
 	// what the rest of the pipeline operates on (validate → rewrite → push →
 	// PR create/update).
+	// multi-commit selection: the user named 2+ individual commits (possibly
+	// non-contiguous, in any order). Resolve them against the visible stack into
+	// a [lowest..highest] span and drive the rest of the pipeline through the
+	// range-mode machinery; the in-span commits the user did NOT name are marked
+	// Skip below so each PR links onto its nearest selected predecessor.
+	var multiSelectedDepths []int       // depths-from-head of selected commits (multi mode, non-jj), for post-rewrite recovery
+	var multiSelectedChangeIDs []string // jj change-ids of selected commits (multi mode, jj), for post-rewrite recovery
+	if config.commitRange.IsMulti() {
+		head := resolveStackHead()
+		visible := must(getStackedCommits(originMain, head, false))
+		lo, hi, err := orderSelection(visible, config.commitRange.Selected)
+		if err != nil {
+			exitf("ERROR: %v", err)
+		}
+		config.commitRange.TipRef = visible[hi].Hash
+		if lo == 0 {
+			config.commitRange.BaseRef = originMainHash
+		} else {
+			config.commitRange.BaseRef = visible[lo-1].Hash
+		}
+		// capture a stable identity per selected commit for post-rewrite recovery:
+		// jj change-ids survive `jj describe`, so prefer them in jj mode; otherwise
+		// fall back to depth-from-HEAD (git-branchless reword moves HEAD to track the
+		// rewritten descendants, so depth is stable there).
+		for _, h := range config.commitRange.Selected {
+			if config.jj.enabled {
+				multiSelectedChangeIDs = append(multiSelectedChangeIDs, must(jjGetChangeID(h)))
+			} else {
+				multiSelectedDepths = append(multiSelectedDepths, mustCommitCount(h, head))
+			}
+		}
+	}
+
 	var selectedBase, fullTip string
-	var rangeBaseDepth, rangeTipDepth int // depths from HEAD, used to recover after rewrite
+	var rangeBaseDepth, rangeTipDepth int // depths from HEAD (non-jj), used to recover after rewrite
+	var rangeTipChangeID string           // jj change-id of the selected tip (jj), used to recover after rewrite
 	if config.commitRange.HasArg {
 		selectedBase = config.commitRange.BaseRef
 		fullTip = config.commitRange.TipRef
-		preRewriteHead := resolveStackHead()
-		rangeBaseDepth = mustCommitCount(selectedBase, preRewriteHead)
-		rangeTipDepth = mustCommitCount(fullTip, preRewriteHead)
+		if config.jj.enabled {
+			// jj change-ids are stable across `jj describe`; recover the tip by
+			// change-id so an explicit BASE..TIP / COMMIT... selection is honored
+			// even when jj's @- points at a different sibling stack. selectedBase
+			// needs no recovery: BASE is exclusive and below the reworded commits,
+			// so it is never reworded and its hash does not drift.
+			rangeTipChangeID = must(jjGetChangeID(fullTip))
+		} else {
+			preRewriteHead := resolveStackHead()
+			rangeBaseDepth = mustCommitCount(selectedBase, preRewriteHead)
+			rangeTipDepth = mustCommitCount(fullTip, preRewriteHead)
+		}
 	} else {
 		selectedBase = originMain
 		fullTip = resolveStackHead()
@@ -85,6 +128,12 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 			exitf("no commits to submit in range %v..%v (base %v not found on trunk..tip path)",
 				config.commitRange.BaseRef[:8], config.commitRange.TipRef[:8], config.commitRange.BaseRef[:8])
 		}
+	}
+	// multi-commit selection: mark in-span commits the user did NOT name as Skip.
+	// the selected hashes are valid pre-rewrite; they are recovered by depth after
+	// the rewrite phase (see below) since rewriting changes hashes.
+	if config.commitRange.IsMulti() {
+		markUnselected(stackedCommits, sliceToSet(config.commitRange.Selected), true)
 	}
 	for _, commit := range stackedCommits {
 		printf("%s\n", commit)
@@ -136,12 +185,22 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	// rewords change commit_ids; in jj-workspace mode the captured `head` no
 	// longer maps to the rewritten chain, so re-resolve before the re-read.
 	// In range mode the user's baseRef/tipRef hashes also drift because the
-	// rewritten chain has new hashes; recover via depth-from-HEAD captured
-	// pre-rewrite (rewrite preserves count and ordering, only hashes change).
+	// rewritten chain has new hashes; recover the tip from its stable identity
+	// captured pre-rewrite — jj change-id in jj mode (which survives `jj describe`
+	// and stays correct even when @- is a different sibling stack), depth-from-HEAD
+	// otherwise (git-branchless reword moves HEAD, so depth is stable there).
 	postRewriteHead := resolveStackHead()
+	depthResolver := func(head string, depth int) (string, error) {
+		return resolveRef(fmt.Sprintf("%v~%v", head, depth))
+	}
 	if config.commitRange.HasArg {
-		fullTip = must(resolveRef(fmt.Sprintf("%v~%v", postRewriteHead, rangeTipDepth)))
-		selectedBase = must(resolveRef(fmt.Sprintf("%v~%v", postRewriteHead, rangeBaseDepth)))
+		fullTip = must(recoverRangeTip(config.jj.enabled, rangeTipChangeID, postRewriteHead, rangeTipDepth, resolveJJRevision, depthResolver))
+		if config.jj.enabled {
+			// BASE is exclusive and never reworded, so its pre-rewrite hash is stable.
+			selectedBase = config.commitRange.BaseRef
+		} else {
+			selectedBase = must(depthResolver(postRewriteHead, rangeBaseDepth))
+		}
 	} else {
 		fullTip = postRewriteHead
 	}
@@ -149,6 +208,23 @@ Hint: use "git add -A" and "git stash" to clean up the repository
 	stackedCommits = fullStack
 	if config.commitRange.HasArg {
 		stackedCommits = sliceFromBase(fullStack, selectedBase, originMainHash)
+	}
+	// multi mode: recover the selected set and re-mark in-span skips, since the
+	// rewrite phase gave every commit a new hash. recover from the same stable
+	// identities captured pre-rewrite — jj change-ids in jj mode, depth-from-HEAD
+	// otherwise (mirrors the tip recovery above).
+	if config.commitRange.IsMulti() {
+		selected := map[string]bool{}
+		if config.jj.enabled {
+			for _, id := range multiSelectedChangeIDs {
+				selected[must(resolveJJRevision(id))] = true
+			}
+		} else {
+			for _, d := range multiSelectedDepths {
+				selected[must(depthResolver(postRewriteHead, d))] = true
+			}
+		}
+		markUnselected(stackedCommits, selected, false)
 	}
 
 	// checkpoint: rewrite
@@ -384,6 +460,63 @@ func sliceFromBase(fullStack []*Commit, baseHash, originMainHash string) []*Comm
 	return nil
 }
 
+// orderSelection locates each selected commit hash within stack (ordered
+// oldest→newest) and returns the indices of the lowest (lo) and highest (hi)
+// selected commits — the span the multi-commit form operates on. Selected may be
+// given in any order; lo/hi reflect actual stack position. It errors if any
+// selected hash is absent from the stack (e.g. not an ancestor of the tip).
+func orderSelection(stack []*Commit, selected []string) (lo, hi int, err error) {
+	pos := make(map[string]int, len(stack))
+	for i, cm := range stack {
+		pos[cm.Hash] = i
+	}
+	lo, hi = -1, -1
+	for _, h := range selected {
+		i, ok := pos[h]
+		if !ok {
+			return 0, 0, errorf("commit %v is not in the current stack", h[:min(8, len(h))])
+		}
+		if lo == -1 || i < lo {
+			lo = i
+		}
+		if hi == -1 || i > hi {
+			hi = i
+		}
+	}
+	if lo == -1 {
+		return 0, 0, errorf("no commits selected")
+	}
+	return lo, hi, nil
+}
+
+// sliceToSet returns a set (map to true) of the given hashes.
+func sliceToSet(hashes []string) map[string]bool {
+	set := make(map[string]bool, len(hashes))
+	for _, h := range hashes {
+		set[h] = true
+	}
+	return set
+}
+
+// markUnselected sets Skip on every commit whose hash is not in selected. Used
+// by the multi-commit form to exclude in-span commits the user did not name
+// while leaving the existing skip/base-linkage machinery to do the rest. announce
+// prints a line per newly-skipped commit (true for the pre-rewrite pass, false
+// for the post-rewrite re-mark which would otherwise duplicate the output).
+func markUnselected(commits []*Commit, selected map[string]bool, announce bool) {
+	for _, cm := range commits {
+		if cm.Skip {
+			continue
+		}
+		if !selected[cm.Hash] {
+			cm.Skip = true
+			if announce {
+				printf("skip \"%v\" (%v) not selected\n", shortenTitle(cm.Title), cm.ShortHash())
+			}
+		}
+	}
+}
+
 // resolveBaseForBottom returns the branch the bottommost selected PR should
 // base on. It walks fullStack to find the commit immediately before bottom and
 // returns that commit's Remote-Ref if it has one (i.e., the parent is already a
@@ -435,6 +568,29 @@ func resolveStackHead() string {
 	head := strings.TrimSpace(out)
 	debugf("resolved jj @- to %v", head)
 	return head
+}
+
+// recoverRangeTip recomputes the selected tip's commit hash after the reword
+// phase rewrote commit hashes. In jj mode the tip's change-id is stable across
+// `jj describe`, so it resolves the tip by change-id — honoring an explicit
+// BASE..TIP / COMMIT... selection even when jj's @- points at a *different*
+// sibling stack (the @-+depth path silently pushed the @- stack instead, ignoring
+// the positional range). In git-branchless mode reword moves HEAD to track the
+// rewritten descendants, so depth-from-HEAD against postRewriteHead is correct.
+// resolveChangeID/resolveDepth are injected so the decision is unit-testable
+// without invoking jj/git.
+func recoverRangeTip(
+	jjEnabled bool,
+	changeID string,
+	postRewriteHead string,
+	tipDepth int,
+	resolveChangeID func(string) (string, error),
+	resolveDepth func(head string, depth int) (string, error),
+) (string, error) {
+	if jjEnabled {
+		return resolveChangeID(changeID)
+	}
+	return resolveDepth(postRewriteHead, tipDepth)
 }
 
 // validateRemoteRefsBeforePush returns the ShortHash of each non-skipped commit

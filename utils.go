@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,9 @@ import (
 )
 
 var gray = "\033[38;5;245m"
+var yellow = "\033[33m"
+var red = "\033[31m"
+var boldCyan = "\033[1;36m"
 var reset = "\033[0m"
 var stdout = &wrapWriter{w: os.Stdout, last: '\n'}
 var stderr = &wrapWriter{w: os.Stderr, last: '\n'}
@@ -70,6 +74,29 @@ func errorf(msg string, args ...any) error {
 	return fmt.Errorf(msg, args...)
 }
 
+// confirm prompts the user with a y/N question on the terminal and reports
+// whether they accepted. It returns true immediately when --yes/-y
+// (config.autoAccept) is set. On a non-interactive stdin without --yes it
+// declines and prints a hint, rather than blocking on a read that never
+// arrives.
+func confirm(prompt string) bool {
+	if config.autoAccept {
+		return true
+	}
+	if fi, err := os.Stdin.Stat(); err != nil || (fi.Mode()&os.ModeCharDevice) == 0 {
+		warnf("%s [y/N]: non-interactive; pass --yes to accept. Declining.", prompt)
+		return false
+	}
+	stdout.ensureNewline()
+	stderr.ensureNewline()
+	stderrf(boldCyan)
+	stderrf(prompt + " [y/N]: ")
+	stderrf(reset)
+	input, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	r := strings.TrimSpace(strings.ToLower(input))
+	return r == "y" || r == "yes"
+}
+
 func wrapf(err error, msg string, args ...any) error {
 	if err == nil {
 		return nil
@@ -121,12 +148,37 @@ func debugf(msg string, args ...any) {
 	stderrf(reset)
 }
 
+// warnf prints a warning to stderr in yellow. Color codes are emitted as
+// standalone writes so wrapWriter's newline tracking stays correct (see the
+// color detection in wrapWriter.Write).
+func warnf(format string, args ...any) {
+	if len(args) > 0 {
+		format = fmt.Sprintf(format, args...)
+	}
+	format = strings.TrimSuffix(format, "\n")
+	stdout.ensureNewline()
+	stderr.ensureNewline()
+	stderrf(yellow)
+	stderrf(format)
+	stderrf(reset)
+	stderrf("\n")
+}
+
+// exitf prints an error to stderr in red and exits 1. Color codes are emitted
+// as standalone writes so wrapWriter's newline tracking stays correct (see the
+// color detection in wrapWriter.Write).
 func exitf(msg string, args ...any) {
 	msg = trimPrefixNewline(msg)
-	stderrf(msg, args...)
-	if !strings.HasSuffix(msg, "\n") {
-		stderrf("\n")
+	if len(args) > 0 {
+		msg = fmt.Sprintf(msg, args...)
 	}
+	msg = strings.TrimSuffix(msg, "\n")
+	stdout.ensureNewline()
+	stderr.ensureNewline()
+	stderrf(red)
+	stderrf(msg)
+	stderrf(reset)
+	stderrf("\n")
 	os.Exit(1)
 }
 

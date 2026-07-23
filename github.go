@@ -21,6 +21,17 @@ type PR struct {
 	Head   struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+	// Stack is non-nil when the PR is part of a GitHub native stack. It is the
+	// signal that base edits via `gh pr edit --base` are blocked, and it carries
+	// the stack Number needed to dissolve the stack (`gh stack unstack <n>`).
+	Stack *struct {
+		Number   int `json:"number"`
+		Size     int `json:"size"`
+		Position int `json:"position"`
+	} `json:"stack"`
 	UpdatedAt *time.Time
 }
 
@@ -139,8 +150,60 @@ func githubPRUpdateBaseForCommit(commit *Commit, base string) error {
 	if err != nil {
 		return err
 	}
+	// Record the resolved number now (githubGetPRNumberForCommit doesn't set it
+	// on branch-matched PRs until a later phase) so a deferred stack realign and
+	// its warning can name the PR.
+	if commit.PRNumber == 0 {
+		commit.PRNumber = prNumber
+	}
+	// Skip the edit when the base already matches: this avoids a needless
+	// updatePullRequest mutation, which GitHub blocks on natively-stacked PRs.
+	// If the pre-check fetch fails, fall through and attempt the edit anyway.
+	if pr, perr := githubGetPRByNumber(prNumber); perr == nil && pr != nil && pr.Base.Ref == base {
+		debugf("PR #%d base already %q, skip base edit", prNumber, base)
+		return nil
+	}
 	_, err = gh("pr", "edit", strconv.Itoa(prNumber), "--base", base)
+	if isBaseChangeBlockedByStack(err) {
+		// GitHub owns the base branch of a natively-stacked PR and rejects
+		// updatePullRequest. Record it so main() can realign the whole stack
+		// once, after the push barrier (with confirmation), instead of
+		// crashing here inside a push goroutine.
+		commit.BaseBlocked = true
+		debugf("PR #%d base change to %q blocked by native stack; deferring realign", prNumber, base)
+		return nil
+	}
 	return err
+}
+
+// isBaseChangeBlockedByStack reports whether err is GitHub rejecting a
+// base-branch edit because the PR is part of a native stack, e.g.
+// "GraphQL: Cannot change the base branch because the pull request is part of
+// a stack. (updatePullRequest)".
+func isBaseChangeBlockedByStack(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "part of a stack")
+}
+
+// githubStackRealign rebuilds the native GitHub stack numbered stackNumber so it
+// matches the local stack `branches` (ordered bottom→top). gh-stack's `link`
+// never removes a PR from an existing stack and `modify` is interactive-only, so
+// the only scriptable way to drop the orphaned PR(s) is to dissolve the whole
+// stack (`gh stack unstack <n>`) and relink just the local branches into a fresh
+// stack, which recreates it with correct base chaining. Any PR no longer in the
+// chain is left as a standalone open PR.
+func githubStackRealign(stackNumber int, branches []string) error {
+	out, err := gh("stack", "unstack", strconv.Itoa(stackNumber))
+	if err != nil {
+		if strings.Contains(out+err.Error(), "unknown command") {
+			return errorf("git-pr needs the gh-stack extension to fix a native GitHub stack:\n" +
+				"  gh extension install github/gh-stack")
+		}
+		return errorf("gh stack unstack %d failed: %v", stackNumber, err)
+	}
+	if _, err := gh(append([]string{"stack", "link"}, branches...)...); err != nil {
+		return errorf("gh stack link %s failed: %v", strings.Join(branches, " "), err)
+	}
+	return nil
 }
 
 var regexpNumber = regexp.MustCompile(`[0-9]+`)

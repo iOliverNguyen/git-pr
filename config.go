@@ -14,8 +14,6 @@ import (
 
 var emojisx = []string{"🐹", "🐮", "🐯", "🦊", "🐲", "🐼", "🦁", "🐰", "🐵", "🐻", "🐶", "🐷"}
 
-const version = "1.2.0"
-
 var config Config
 
 const gitconfigTags = "git-pr.tags"
@@ -36,6 +34,7 @@ type Config struct {
 	includeOtherAuthors bool   // flag
 	dryRun              bool   // flag: show what would be done without making changes
 	stopAfter           string // flag: stop after specific phase
+	autoAccept          bool   // flag: assume "yes" to interactive prompts
 
 	skipDraft     bool     // flag: skip draft commits by default
 	includeDraft  bool     // flag: explicitly include draft commits (highest precedence)
@@ -104,6 +103,8 @@ func LoadConfig() (config Config) {
 	flag.StringVar(&config.stopAfter, "stop-after", "", "Stop after phase: validate|get-commits|rewrite|push|pr-create")
 	flag.BoolVar(&config.skipDraft, "skip-draft", false, "Skip commits with [draft] in title")
 	flag.BoolVar(&config.includeDraft, "include-draft", false, "Include draft commits (override config)")
+	flag.BoolVar(&config.autoAccept, "yes", false, `Assume "yes" to prompts (for non-interactive use)`)
+	flag.BoolVar(&config.autoAccept, "y", false, `Assume "yes" to prompts (shorthand for --yes)`)
 
 	flagGitHubHosts := flag.String("gh-hosts", "~/.config/gh/hosts.yml", "Path to config.json")
 	flagTimeout := flag.Int("timeout", 20, "API call timeout in seconds")
@@ -137,6 +138,9 @@ A COMMIT may be a git ref/hash, or (in a jj repo) a jj change-id.`
 		// check environment variables as fallback
 		if !config.dryRun && os.Getenv("GIT_PR_DRY_RUN") == "1" {
 			config.dryRun = true
+		}
+		if !config.autoAccept && os.Getenv("GIT_PR_YES") == "1" {
+			config.autoAccept = true
 		}
 		if config.stopAfter == "" && os.Getenv("GIT_PR_STOP_AFTER") != "" {
 			config.stopAfter = os.Getenv("GIT_PR_STOP_AFTER")

@@ -304,6 +304,55 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 	}
 	parallelForEach(pushFns, func(fn func()) { fn() })
 
+	// Some PRs may be part of a GitHub native stack, which blocks base-branch
+	// edits via updatePullRequest. githubPRUpdateBaseForCommit flagged those on
+	// the commit (commit.BaseBlocked) instead of crashing. Realign the whole
+	// stack once, here on the main goroutine (never inside the push goroutines),
+	// after warning and confirmation.
+	if !config.dryRun {
+		var blocked []*Commit
+		for _, commit := range stackedCommits {
+			if commit.BaseBlocked && !commit.Skip {
+				blocked = append(blocked, commit)
+			}
+		}
+		if len(blocked) > 0 {
+			var branches []string
+			for _, commit := range stackedCommits {
+				if !commit.Skip {
+					branches = append(branches, commit.GetRemoteRef())
+				}
+			}
+			// The native stack number lives on the PR's stack field; read it from
+			// a blocked PR so we can dissolve that specific stack.
+			var stackNumber int
+			for _, commit := range blocked {
+				if pr, err := githubGetPRByNumber(commit.PRNumber); err == nil && pr != nil && pr.Stack != nil {
+					stackNumber = pr.Stack.Number
+					break
+				}
+			}
+			if stackNumber == 0 {
+				exitf("ERROR: base retargeting is blocked by a GitHub native stack, but git-pr\n" +
+					"could not determine the stack number. Fix it manually with `gh stack modify`.")
+			}
+			warnf("warning: PR(s) %s are part of GitHub native stack #%d; base retargeting is blocked.\n"+
+				"git-pr will rebuild the stack from your current %d PR(s): %s\n"+
+				"(the stack is dissolved and relinked; PRs no longer in your local stack are dropped).",
+				blockedPRNumbers(blocked), stackNumber, len(branches), strings.Join(branches, " "))
+			if confirm("Rebuild the GitHub stack now?") {
+				// Clean exit (not a panic) on failure: causes are user-actionable
+				// (e.g. missing gh-stack extension).
+				if err := githubStackRealign(stackNumber, branches); err != nil {
+					exitf("ERROR: failed to realign GitHub stack: %v", err)
+				}
+			} else {
+				warnf("skipped. To fix manually: gh stack unstack %d && gh stack link %s",
+					stackNumber, strings.Join(branches, " "))
+			}
+		}
+	}
+
 	// checkpoint: push
 	if config.stopAfter == "push" {
 		printf("stopped after: push\n")
@@ -534,6 +583,21 @@ func resolveBaseForBottom(fullStack []*Commit, bottom *Commit, trunk string) str
 		return ref
 	}
 	return trunk
+}
+
+// blockedPRNumbers renders the PR numbers of commits whose base change was
+// blocked by a native stack, e.g. "#123, #456".
+func blockedPRNumbers(commits []*Commit) string {
+	var parts []string
+	for _, commit := range commits {
+		if commit.PRNumber != 0 {
+			parts = append(parts, fmt.Sprintf("#%d", commit.PRNumber))
+		}
+	}
+	if len(parts) == 0 {
+		return "(unknown)"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // parallelForEach runs fn concurrently for each item, waiting for all goroutines

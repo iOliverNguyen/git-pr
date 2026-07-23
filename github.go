@@ -184,6 +184,34 @@ func isBaseChangeBlockedByStack(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "part of a stack")
 }
 
+// isGhStackMissing reports whether a `gh stack ...` call failed because the
+// gh-stack extension is not installed (`unknown command "stack" for "gh"`).
+func isGhStackMissing(out string, err error) bool {
+	return err != nil && strings.Contains(out+err.Error(), "unknown command")
+}
+
+// isStackWouldRemove reports whether `gh stack link` refused because updating the
+// stack to the given branches would drop a PR from it, e.g.
+// "✗ Cannot update stack: this would remove #22054 from the stack".
+func isStackWouldRemove(out string, err error) bool {
+	return err != nil && strings.Contains(out+err.Error(), "would remove")
+}
+
+// githubStackNumberForCommits returns the native stack number that the commits'
+// PRs belong to (0 if none are in a stack). The number lives on each PR's stack
+// field; the first non-nil one wins.
+func githubStackNumberForCommits(commits []*Commit) int {
+	for _, commit := range commits {
+		if commit.PRNumber == 0 {
+			continue
+		}
+		if pr, err := githubGetPRByNumber(commit.PRNumber); err == nil && pr != nil && pr.Stack != nil {
+			return pr.Stack.Number
+		}
+	}
+	return 0
+}
+
 // githubStackRealign rebuilds the native GitHub stack numbered stackNumber so it
 // matches the local stack `branches` (ordered bottom→top). gh-stack's `link`
 // never removes a PR from an existing stack and `modify` is interactive-only, so

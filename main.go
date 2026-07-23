@@ -304,53 +304,12 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 	}
 	parallelForEach(pushFns, func(fn func()) { fn() })
 
-	// Some PRs may be part of a GitHub native stack, which blocks base-branch
-	// edits via updatePullRequest. githubPRUpdateBaseForCommit flagged those on
-	// the commit (commit.BaseBlocked) instead of crashing. Realign the whole
-	// stack once, here on the main goroutine (never inside the push goroutines),
-	// after warning and confirmation.
-	if !config.dryRun {
-		var blocked []*Commit
-		for _, commit := range stackedCommits {
-			if commit.BaseBlocked && !commit.Skip {
-				blocked = append(blocked, commit)
-			}
-		}
-		if len(blocked) > 0 {
-			var branches []string
-			for _, commit := range stackedCommits {
-				if !commit.Skip {
-					branches = append(branches, commit.GetRemoteRef())
-				}
-			}
-			// The native stack number lives on the PR's stack field; read it from
-			// a blocked PR so we can dissolve that specific stack.
-			var stackNumber int
-			for _, commit := range blocked {
-				if pr, err := githubGetPRByNumber(commit.PRNumber); err == nil && pr != nil && pr.Stack != nil {
-					stackNumber = pr.Stack.Number
-					break
-				}
-			}
-			if stackNumber == 0 {
-				exitf("ERROR: base retargeting is blocked by a GitHub native stack, but git-pr\n" +
-					"could not determine the stack number. Fix it manually with `gh stack modify`.")
-			}
-			warnf("warning: PR(s) %s are part of GitHub native stack #%d; base retargeting is blocked.\n"+
-				"git-pr will rebuild the stack from your current %d PR(s): %s\n"+
-				"(the stack is dissolved and relinked; PRs no longer in your local stack are dropped).",
-				blockedPRNumbers(blocked), stackNumber, len(branches), strings.Join(branches, " "))
-			if confirm("Rebuild the GitHub stack now?") {
-				// Clean exit (not a panic) on failure: causes are user-actionable
-				// (e.g. missing gh-stack extension).
-				if err := githubStackRealign(stackNumber, branches); err != nil {
-					exitf("ERROR: failed to realign GitHub stack: %v", err)
-				}
-			} else {
-				warnf("skipped. To fix manually: gh stack unstack %d && gh stack link %s",
-					stackNumber, strings.Join(branches, " "))
-			}
-		}
+	// A base edit can be blocked because a PR is already in a native stack;
+	// githubPRUpdateBaseForCommit records that on commit.BaseBlocked instead of
+	// crashing. With --no-stack we don't manage the stack, so warn that the base
+	// wasn't retargeted; otherwise manageNativeStack (end of push) handles it.
+	if !config.dryRun && config.noStack {
+		warnStaleBlockedBases(stackedCommits)
 	}
 
 	// checkpoint: push
@@ -458,6 +417,65 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 			must(gh("pr", "edit", strconv.Itoa(commit.PRNumber), "--add-label", strings.Join(tags, ",")))
 		}
 	})
+
+	// create or update the native GitHub stack so the pushed PRs form one stack
+	if !config.noStack {
+		manageNativeStack(stackedCommits)
+	}
+}
+
+// manageNativeStack creates or updates the native GitHub stack so the pushed
+// PRs (in `commits`, bottom→top) form a single stack. It prompts before doing
+// anything; --yes auto-accepts and --no-stack skips this entirely (handled by
+// the caller). gh-stack's `link` creates a stack when none exists and updates an
+// existing one (correcting bases), but it never drops a PR — so if the local
+// stack no longer contains a PR that is still in the native stack, `link` fails
+// and we fall back to a dissolve+relink rebuild (after a second confirmation).
+func manageNativeStack(commits []*Commit) {
+	var branches []string
+	for _, commit := range commits {
+		if !commit.Skip {
+			branches = append(branches, commit.GetRemoteRef())
+		}
+	}
+	if len(branches) < 2 { // a single PR is not a stack
+		return
+	}
+	if !confirm(fmt.Sprintf("Create/update the GitHub stack for %d PRs (%s)?",
+		len(branches), strings.Join(branches, " "))) {
+		printf("skipped native stack (base branches only)\n")
+		warnStaleBlockedBases(commits)
+		return
+	}
+	out, err := gh(append([]string{"stack", "link"}, branches...)...)
+	switch {
+	case err == nil:
+		printf("native stack updated: %s\n", strings.Join(branches, " "))
+	case isGhStackMissing(out, err):
+		warnf("gh-stack extension not installed; skipping native stack.\n" +
+			"  install: gh extension install github/gh-stack (or pass --no-stack)")
+		warnStaleBlockedBases(commits)
+	case isStackWouldRemove(out, err):
+		stackNumber := githubStackNumberForCommits(commits)
+		if stackNumber == 0 {
+			exitf("ERROR: updating the native stack needs to drop a PR, but git-pr could not\n" +
+				"find the stack number. Fix it manually with `gh stack modify`.")
+		}
+		warnf("updating the stack would drop PR(s) no longer in your local stack (stack #%d).\n"+
+			"git-pr will dissolve and rebuild it as: %s", stackNumber, strings.Join(branches, " "))
+		if confirm("Rebuild the GitHub stack now?") {
+			if err := githubStackRealign(stackNumber, branches); err != nil {
+				exitf("ERROR: failed to rebuild GitHub stack: %v", err)
+			}
+		} else {
+			warnf("skipped; branches were pushed but the stack is unchanged.\n"+
+				"To drop the PR, run `gh stack modify` (interactive, keeps the rest of the stack),\n"+
+				"or rebuild the whole stack with: gh stack unstack %d && gh stack link %s",
+				stackNumber, strings.Join(branches, " "))
+		}
+	default:
+		exitf("ERROR: gh stack link failed: %v\n%s", err, out)
+	}
 }
 
 func findCommitsWithoutRemoteRef(commits []*Commit) iter.Seq[*Commit] {
@@ -598,6 +616,24 @@ func blockedPRNumbers(commits []*Commit) string {
 		return "(unknown)"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// warnStaleBlockedBases warns when a base edit was blocked (the PR is already in
+// a native stack) and the stack was not rebuilt to fix it — so the user knows
+// the reparented PR still points at its old base. No-op when nothing was blocked.
+func warnStaleBlockedBases(commits []*Commit) {
+	var blocked []*Commit
+	for _, commit := range commits {
+		if commit.BaseBlocked && !commit.Skip {
+			blocked = append(blocked, commit)
+		}
+	}
+	if len(blocked) == 0 {
+		return
+	}
+	warnf("PR(s) %s are in a GitHub native stack and could not be retargeted; their base is stale.\n"+
+		"Fix with `gh stack modify`, or let git-pr rebuild the stack (accept the prompt / drop --no-stack).",
+		blockedPRNumbers(blocked))
 }
 
 // parallelForEach runs fn concurrently for each item, waiting for all goroutines

@@ -35,6 +35,7 @@ type Config struct {
 	dryRun              bool   // flag: show what would be done without making changes
 	stopAfter           string // flag: stop after specific phase
 	autoAccept          bool   // flag: assume "yes" to interactive prompts
+	noStack             bool   // flag: skip creating/updating the native GitHub stack
 
 	skipDraft     bool     // flag: skip draft commits by default
 	includeDraft  bool     // flag: explicitly include draft commits (highest precedence)
@@ -105,6 +106,7 @@ func LoadConfig() (config Config) {
 	flag.BoolVar(&config.includeDraft, "include-draft", false, "Include draft commits (override config)")
 	flag.BoolVar(&config.autoAccept, "yes", false, `Assume "yes" to prompts (for non-interactive use)`)
 	flag.BoolVar(&config.autoAccept, "y", false, `Assume "yes" to prompts (shorthand for --yes)`)
+	flag.BoolVar(&config.noStack, "no-stack", false, "Do not create/update a native GitHub stack on push")
 
 	flagGitHubHosts := flag.String("gh-hosts", "~/.config/gh/hosts.yml", "Path to config.json")
 	flagTimeout := flag.Int("timeout", 20, "API call timeout in seconds")
@@ -141,6 +143,9 @@ A COMMIT may be a git ref/hash, or (in a jj repo) a jj change-id.`
 		}
 		if !config.autoAccept && os.Getenv("GIT_PR_YES") == "1" {
 			config.autoAccept = true
+		}
+		if !config.noStack && os.Getenv("GIT_PR_NO_STACK") == "1" {
+			config.noStack = true
 		}
 		if config.stopAfter == "" && os.Getenv("GIT_PR_STOP_AFTER") != "" {
 			config.stopAfter = os.Getenv("GIT_PR_STOP_AFTER")

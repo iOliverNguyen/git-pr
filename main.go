@@ -392,6 +392,12 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 		printf("%v\n", prURL)
 		prBodyTargets = append(prBodyTargets, commit)
 	}
+	// The tip (top) PR is the last non-skipped commit — prBodyTargets is
+	// bottom→top. --add-tip-label applies here only.
+	var tipCommit *Commit
+	if len(prBodyTargets) > 0 {
+		tipCommit = prBodyTargets[len(prBodyTargets)-1]
+	}
 	parallelForEach(prBodyTargets, func(commit *Commit) {
 		pr := must(githubGetPRByNumber(commit.PRNumber))
 		pullURL := ghAPIURL("pulls/%v", commit.PRNumber)
@@ -413,8 +419,22 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 		} else {
 			must(gh("pr", "ready", strconv.Itoa(commit.PRNumber)))
 		}
-		if tags := commit.GetTags(config.tags...); len(tags) > 0 {
-			must(gh("pr", "edit", strconv.Itoa(commit.PRNumber), "--add-label", strings.Join(tags, ",")))
+		// Labels: per-commit tags + --add-label on every PR; --add-tip-label on
+		// the tip PR only. (Which label means "run full CI" vs "skip" is decided
+		// CI-side; git-pr only applies the configured labels.)
+		labels := commit.GetTags(config.tags...)
+		labels = append(labels, config.addLabels...)
+		if commit == tipCommit {
+			labels = append(labels, config.addTipLabels...)
+		}
+		if labels = dedupStrings(labels); len(labels) > 0 {
+			must(gh("pr", "edit", strconv.Itoa(commit.PRNumber), "--add-label", strings.Join(labels, ",")))
+		}
+		// Reconcile: a non-tip PR must not keep tip-only labels left from a push
+		// where it used to be the tip. Removing a label the PR lacks is a no-op,
+		// so tolerate errors here.
+		if commit != tipCommit && len(config.addTipLabels) > 0 {
+			_, _ = gh("pr", "edit", strconv.Itoa(commit.PRNumber), "--remove-label", strings.Join(config.addTipLabels, ","))
 		}
 	})
 

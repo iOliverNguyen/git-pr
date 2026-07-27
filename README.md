@@ -144,6 +144,40 @@ commit message body
 Tags: bug, p0
 ```
 
+#### Add a label to every PR, or to the tip (top) PR only:
+
+`--add-label` adds a label to every PR in the stack; `--add-tip-label` adds it
+to the tip (topmost) PR only. Both are repeatable. Labels must already exist in
+the repo.
+
+```sh
+git pr --add-label 'CI • SkipCheck' --add-tip-label 'CI • StackCheck'
+```
+
+On re-push, tip-only labels are removed from any PR that is no longer the tip.
+
+### Config file
+
+git-pr reads an optional config file so a repo can set these labels once for
+everyone (instead of passing flags each time). JSON is the default format; YAML
+(`.yaml`/`.yml`) is also accepted.
+
+```jsonc
+// .config/git-pr.json
+{ "add_label": ["CI • SkipCheck"], "add_tip_label": ["CI • StackCheck"] }
+```
+
+Discovery, highest precedence first:
+
+1. CLI flags (`--add-label`, `--add-tip-label`)
+2. `<dir>/.config/git-pr.local.json` — per-user override (gitignore this)
+3. `<dir>/.config/git-pr.json` — project config, committed
+4. `~/.config/git-pr/config.json` — global default
+
+For (2)/(3), git-pr walks up from the current directory to the **repository
+root** and uses the nearest `.config/git-pr.*` it finds. It never ascends past
+the repo root, so a git submodule does not inherit its parent repo's config.
+
 ## How it works
 
 - It associates each commit with a pull request by adding `Remote-Ref: <remote-branch>` to the commit message.

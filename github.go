@@ -190,11 +190,37 @@ func isGhStackMissing(out string, err error) bool {
 	return err != nil && strings.Contains(out+err.Error(), "unknown command")
 }
 
-// isStackWouldRemove reports whether `gh stack link` refused because updating the
-// stack to the given branches would drop a PR from it, e.g.
-// "✗ Cannot update stack: this would remove #22054 from the stack".
-func isStackWouldRemove(out string, err error) bool {
-	return err != nil && strings.Contains(out+err.Error(), "would remove")
+// isStackNeedsRebuild reports whether `gh stack link` refused an incremental
+// update because the existing stack cannot be grown into the requested shape.
+// gh-stack only ever appends to the top and never drops a PR, so it refuses both
+// when the local stack drops a PR ("✗ Cannot update stack: this would remove
+// #22054 from the stack") and when a PR belongs below the top ("✗ Cannot update
+// stack: new PRs must be added to the top of the existing stack"). Matching the
+// shared "Cannot update stack" prefix covers both and any future sibling; either
+// way the only scriptable remedy is dissolve + relink.
+func isStackNeedsRebuild(out string, err error) bool {
+	return err != nil && strings.Contains(out+err.Error(), "Cannot update stack")
+}
+
+// isStackPartiallyUnstacked reports whether `gh stack unstack` left the stack in
+// place. It exits 0 in that case, printing "Some pull requests are queued for
+// merge or have auto-merge enabled and remain stacked on GitHub" — GitHub refuses
+// to unstack a PR that is queued or has auto-merge on, and gh-stack then keeps
+// the whole stack rather than partially dissolving it.
+func isStackPartiallyUnstacked(out string) bool {
+	return strings.Contains(out, "remain stacked")
+}
+
+// ghStackReason extracts gh-stack's own one-line explanation ("✗ Cannot update
+// stack: ...") from its output, so git-pr can echo why the update was refused
+// instead of paraphrasing it. Returns "" when no such line is present.
+func ghStackReason(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); strings.Contains(line, "Cannot update stack") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "✗"))
+		}
+	}
+	return ""
 }
 
 // githubStackNumberForCommits returns the native stack number that the commits'
@@ -227,6 +253,13 @@ func githubStackRealign(stackNumber int, branches []string) error {
 				"  gh extension install github/gh-stack")
 		}
 		return errorf("gh stack unstack %d failed: %v", stackNumber, err)
+	}
+	// Relinking after a partial unstack would fail with the same opaque error, so
+	// stop here and name the real cause.
+	if isStackPartiallyUnstacked(out) {
+		return errorf("stack #%d could not be dissolved: some PRs are queued for merge or have\n"+
+			"auto-merge enabled, so GitHub kept them stacked. Let them land (or dequeue /\n"+
+			"disable auto-merge), then re-run; or fix the stack with `gh stack modify`.", stackNumber)
 	}
 	if _, err := gh(append([]string{"stack", "link"}, branches...)...); err != nil {
 		return errorf("gh stack link %s failed: %v", strings.Join(branches, " "), err)

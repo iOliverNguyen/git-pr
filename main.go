@@ -448,9 +448,10 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 // PRs (in `commits`, bottom→top) form a single stack. It prompts before doing
 // anything; --yes auto-accepts and --no-stack skips this entirely (handled by
 // the caller). gh-stack's `link` creates a stack when none exists and updates an
-// existing one (correcting bases), but it never drops a PR — so if the local
-// stack no longer contains a PR that is still in the native stack, `link` fails
-// and we fall back to a dissolve+relink rebuild (after a second confirmation).
+// existing one (correcting bases), but it only ever appends to the top and never
+// drops a PR — so it fails whenever the local stack drops a PR or inserts one
+// below the top (e.g. a new commit at the bottom). In that case we fall back to a
+// dissolve+relink rebuild (after a second confirmation).
 func manageNativeStack(commits []*Commit) {
 	var branches []string
 	for _, commit := range commits {
@@ -475,26 +476,31 @@ func manageNativeStack(commits []*Commit) {
 		warnf("gh-stack extension not installed; skipping native stack.\n" +
 			"  install: gh extension install github/gh-stack (or pass --no-stack)")
 		warnStaleBlockedBases(commits)
-	case isStackWouldRemove(out, err):
+	case isStackNeedsRebuild(out, err):
 		stackNumber := githubStackNumberForCommits(commits)
 		if stackNumber == 0 {
-			exitf("ERROR: updating the native stack needs to drop a PR, but git-pr could not\n" +
-				"find the stack number. Fix it manually with `gh stack modify`.")
+			exitf("ERROR: the native stack must be rebuilt to match your local stack, but git-pr\n"+
+				"could not find the stack number. Fix it manually with `gh stack modify`.\n"+
+				"  gh said: %s", ghStackReason(out))
 		}
-		warnf("updating the stack would drop PR(s) no longer in your local stack (stack #%d).\n"+
-			"git-pr will dissolve and rebuild it as: %s", stackNumber, strings.Join(branches, " "))
+		warnf("the existing GitHub stack #%d cannot be updated in place.\n"+
+			"  gh said: %s\n"+
+			"git-pr will dissolve and rebuild it as: %s",
+			stackNumber, ghStackReason(out), strings.Join(branches, " "))
 		if confirm("Rebuild the GitHub stack now?") {
 			if err := githubStackRealign(stackNumber, branches); err != nil {
 				exitf("ERROR: failed to rebuild GitHub stack: %v", err)
 			}
+			printf("native stack rebuilt: %s\n", strings.Join(branches, " "))
 		} else {
 			warnf("skipped; branches were pushed but the stack is unchanged.\n"+
-				"To drop the PR, run `gh stack modify` (interactive, keeps the rest of the stack),\n"+
-				"or rebuild the whole stack with: gh stack unstack %d && gh stack link %s",
+				"To restructure it by hand, run `gh stack modify` (interactive), or rebuild\n"+
+				"the whole stack with: gh stack unstack %d && gh stack link %s",
 				stackNumber, strings.Join(branches, " "))
 		}
 	default:
-		exitf("ERROR: gh stack link failed: %v\n%s", err, out)
+		// err already carries gh's output (see execError.Error), so don't print `out` too
+		exitf("ERROR: gh stack link failed: %v", err)
 	}
 }
 

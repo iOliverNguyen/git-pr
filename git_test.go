@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -572,5 +573,155 @@ func TestShortenTitle(t *testing.T) {
 		result := shortenTitle(title)
 		assert(t, len(result) == 39).Errorf("result length = %d, want 39", len(result))
 		assert(t, strings.HasSuffix(result, "...")).Errorf("should end with '...': %q", result)
+	})
+}
+
+// TestFullMessageRoundTrip guards the render/parse round trip: FullMessage right-aligns
+// trailer keys, so a footer with 2+ items indents the shorter keys. parseTrailers must
+// still recognize them, otherwise every attribute (including Remote-Ref) is dropped and
+// git-pr appends a duplicate Remote-Ref on the next push.
+func TestFullMessageRoundTrip(t *testing.T) {
+	roundTrip := func(t *testing.T, commit *Commit) *Commit {
+		t.Helper()
+		var b strings.Builder
+		b.WriteString("commit abc123def456789012345678901234567890abcd\n")
+		b.WriteString("Author: Test User <test@example.com>\n")
+		b.WriteString("Date:   Mon Jan 1 00:00:00 2024 +0000\n\n")
+		for _, line := range strings.Split(commit.FullMessage(), "\n") {
+			if line == "" {
+				b.WriteString("\n")
+				continue
+			}
+			b.WriteString("    " + line + "\n")
+		}
+		commits, err := parseLogs(b.String())
+		assert(t, err == nil).Fatalf("parseLogs() error = %v", err)
+		assert(t, len(commits) == 1).Fatalf("expected 1 commit, got %d", len(commits))
+		return commits[0]
+	}
+
+	t.Run("two footer items", func(t *testing.T) {
+		commit := &Commit{
+			Title: "wip: something",
+			Attrs: []KeyVal{{"wip", "resolve conflict"}, {KeyRemoteRef, "iOliverNguyen/1d074db6"}},
+		}
+		got := roundTrip(t, commit)
+		assert(t, got.GetRemoteRef() == "iOliverNguyen/1d074db6").Errorf("remote-ref = %q", got.GetRemoteRef())
+		assert(t, got.GetAttr("wip") == "resolve conflict").Errorf("wip = %q", got.GetAttr("wip"))
+		assert(t, got.Message == "").Errorf("message = %q, want empty", got.Message)
+	})
+
+	t.Run("many footer items with body", func(t *testing.T) {
+		commit := &Commit{
+			Title:   "feat: something",
+			Message: "A body paragraph.\n\nAnd another one.",
+			Attrs: []KeyVal{
+				{"wip", "resolve conflict"},
+				{KeyTags, "feat, test"},
+				{"another-longer-key", "another value"},
+				{KeyRemoteRef, "iOliverNguyen/1d074db6"},
+			},
+		}
+		got := roundTrip(t, commit)
+		assert(t, len(got.Attrs) == 4).Errorf("expected 4 attrs, got %d: %v", len(got.Attrs), got.Attrs)
+		assert(t, got.GetRemoteRef() == "iOliverNguyen/1d074db6").Errorf("remote-ref = %q", got.GetRemoteRef())
+		assert(t, got.GetAttr("wip") == "resolve conflict").Errorf("wip = %q", got.GetAttr("wip"))
+		assert(t, got.GetAttr(KeyTags) == "feat, test").Errorf("tags = %q", got.GetAttr(KeyTags))
+		assert(t, got.GetAttr("another-longer-key") == "another value").Errorf("another-longer-key = %q", got.GetAttr("another-longer-key"))
+		assert(t, got.Message == "A body paragraph.\n\nAnd another one.").Errorf("message = %q", got.Message)
+	})
+
+	t.Run("idempotent rewrite", func(t *testing.T) {
+		commit := &Commit{
+			Title: "wip: something",
+			Attrs: []KeyVal{{"wip", "resolve conflict"}, {KeyRemoteRef, "iOliverNguyen/1d074db6"}},
+		}
+		first := roundTrip(t, commit)
+		second := roundTrip(t, first)
+		assert(t, first.FullMessage() == second.FullMessage()).
+			Errorf("not idempotent:\n--- first ---\n%s\n--- second ---\n%s", first.FullMessage(), second.FullMessage())
+	})
+}
+
+func TestParseTrailers(t *testing.T) {
+	tests := []struct {
+		name    string
+		lines   []string
+		message string
+		attrs   []KeyVal
+	}{
+		{
+			name:    "aligned footer block",
+			lines:   []string{"", "       Wip: resolve conflict", "Remote-Ref: user/abc123de"},
+			message: "",
+			attrs:   []KeyVal{{"remote-ref", "user/abc123de"}, {"wip", "resolve conflict"}},
+		},
+		{
+			name:    "aligned footer after body",
+			lines:   []string{"", "The body.", "", "       Wip: resolve conflict", "Remote-Ref: user/abc123de"},
+			message: "The body.",
+			attrs:   []KeyVal{{"remote-ref", "user/abc123de"}, {"wip", "resolve conflict"}},
+		},
+		{
+			name:    "whitespace-only separator line",
+			lines:   []string{"The body.", "   ", "Tags: feat", "Remote-Ref: user/abc123de"},
+			message: "The body.",
+			attrs:   []KeyVal{{"remote-ref", "user/abc123de"}, {"tags", "feat"}},
+		},
+		{
+			name:    "footer only",
+			lines:   []string{"", "Remote-Ref: user/abc123de"},
+			message: "",
+			attrs:   []KeyVal{{"remote-ref", "user/abc123de"}},
+		},
+		{
+			name:    "no blank line above footer",
+			lines:   []string{"The body.", "Remote-Ref: user/abc123de"},
+			message: "The body.\nRemote-Ref: user/abc123de",
+			attrs:   nil,
+		},
+		{
+			name:    "no footer",
+			lines:   []string{"", "The body.", "", "Another paragraph."},
+			message: "The body.\n\nAnother paragraph.",
+			attrs:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			message, attrs := parseTrailers(tt.lines)
+			assert(t, message == tt.message).Errorf("message = %q, want %q", message, tt.message)
+			assert(t, fmt.Sprint(attrs) == fmt.Sprint(tt.attrs)).Errorf("attrs = %v, want %v", attrs, tt.attrs)
+		})
+	}
+}
+
+func TestFullMessage(t *testing.T) {
+	t.Run("aligns keys and puts remote-ref last", func(t *testing.T) {
+		commit := &Commit{
+			Title:   "feat: something",
+			Message: "The body.",
+			Attrs:   []KeyVal{{KeyRemoteRef, "user/abc123de"}, {"wip", "resolve conflict"}, {KeyTags, "feat"}},
+		}
+		want := `feat: something
+
+The body.
+
+      Tags: feat
+       Wip: resolve conflict
+Remote-Ref: user/abc123de`
+		assert(t, commit.FullMessage() == want).Errorf("FullMessage() =\n%s\n\nwant:\n%s", commit.FullMessage(), want)
+	})
+
+	t.Run("empty message has a single blank line before the footer", func(t *testing.T) {
+		commit := &Commit{
+			Title: "feat: something",
+			Attrs: []KeyVal{{KeyRemoteRef, "user/abc123de"}, {"wip", "resolve conflict"}},
+		}
+		want := `feat: something
+
+       Wip: resolve conflict
+Remote-Ref: user/abc123de`
+		assert(t, commit.FullMessage() == want).Errorf("FullMessage() =\n%s\n\nwant:\n%s", commit.FullMessage(), want)
 	})
 }

@@ -13,9 +13,10 @@ var (
 	regexpAuthor     = regexp.MustCompile(`^Author: (.*) <(.*)>$`)
 	regexpDate       = regexp.MustCompile(`^Date:\s+(.*)$`)
 
-	// "key: value"  or  "key = value"
-	// - must not start with space at the beginning of the line
-	regexpKeyVal = regexp.MustCompile(`^([a-zA-Z0-9-]+)\s*:\s*([^ ].+)$`)
+	// "key: value"
+	// - leading blanks are allowed: FullMessage right-aligns keys, so a footer
+	//   with 2+ items indents the shorter ones
+	regexpKeyVal = regexp.MustCompile(`^[ \t]*([a-zA-Z0-9-]+)\s*:\s*([^ ].+)$`)
 	dateLayouts  = []string{"Mon Jan _2 15:04:05 2006 -0700", "2006-01-02 15:04:05 -0700"}
 )
 
@@ -147,7 +148,7 @@ func parseTrailers(lines []string) (message string, attrs []KeyVal) {
 
 	// require: trailers must be separated from body by a blank line
 	// stop at first non-trailer line, then validate the blank line above
-	if len(attrs) > 0 && line == "" {
+	if len(attrs) > 0 && strings.TrimSpace(line) == "" {
 		if i >= 0 {
 			lines = lines[:i] // exclude the blank line
 		} else {

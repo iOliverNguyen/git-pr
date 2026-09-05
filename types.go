@@ -99,7 +99,10 @@ func (commit *Commit) SetAttr(key, value string) {
 
 func (commit *Commit) FullMessage() string {
 	var b strings.Builder
-	fprint(&b, commit.Title, "\n\n", commit.Message, "\n\n")
+	fprint(&b, commit.Title, "\n\n")
+	if commit.Message != "" {
+		fprint(&b, commit.Message, "\n\n")
+	}
 	sort.Slice(commit.Attrs, func(i, j int) bool {
 		if commit.Attrs[i][0] == KeyRemoteRef {
 			return false

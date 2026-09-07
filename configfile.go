@@ -41,17 +41,23 @@ func dedupStrings(xs []string) []string {
 type fileConfig struct {
 	AddLabel    []string `json:"add_label" yaml:"add_label"`
 	AddTipLabel []string `json:"add_tip_label" yaml:"add_tip_label"`
+	Output      string   `json:"output" yaml:"output"`
 }
 
 // mergeFileConfig overlays b onto a: any non-nil slice in b replaces a's. A
 // present-but-empty list (`[]`) is meaningful (explicitly clears) and wins over
-// an absent one (nil).
+// an absent one (nil). Output is a string, which cannot carry that distinction,
+// so an empty Output simply means absent — an empty template renders nothing
+// useful anyway.
 func mergeFileConfig(a, b fileConfig) fileConfig {
 	if b.AddLabel != nil {
 		a.AddLabel = b.AddLabel
 	}
 	if b.AddTipLabel != nil {
 		a.AddTipLabel = b.AddTipLabel
+	}
+	if b.Output != "" {
+		a.Output = b.Output
 	}
 	return a
 }

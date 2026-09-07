@@ -388,8 +388,7 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 		if commit.Skip {
 			continue
 		}
-		prURL := ghWebURL("pull/%v", commit.PRNumber)
-		printf("%v\n", prURL)
+		printf("%v\n", formatPROutput(config.output, commit))
 		prBodyTargets = append(prBodyTargets, commit)
 	}
 	// The tip (top) PR is the last non-skipped commit — prBodyTargets is

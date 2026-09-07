@@ -19,8 +19,8 @@ func writeFile(t *testing.T, path, content string) {
 
 func TestReadConfigFile_JSONAndYAMLParseIdentically(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "j.json"), `{"add_label":["a","b"],"add_tip_label":["tip"]}`)
-	writeFile(t, filepath.Join(dir, "y.yaml"), "add_label:\n  - a\n  - b\nadd_tip_label:\n  - tip\n")
+	writeFile(t, filepath.Join(dir, "j.json"), `{"add_label":["a","b"],"add_tip_label":["tip"],"output":"markdown"}`)
+	writeFile(t, filepath.Join(dir, "y.yaml"), "add_label:\n  - a\n  - b\nadd_tip_label:\n  - tip\noutput: markdown\n")
 
 	j, okJ := readConfigFile(filepath.Join(dir, "j"))
 	y, okY := readConfigFile(filepath.Join(dir, "y"))
@@ -28,6 +28,7 @@ func TestReadConfigFile_JSONAndYAMLParseIdentically(t *testing.T) {
 	assert(t, reflect.DeepEqual(j, y)).Errorf("json %+v != yaml %+v", j, y)
 	assert(t, reflect.DeepEqual(j.AddLabel, []string{"a", "b"})).Errorf("add_label = %v", j.AddLabel)
 	assert(t, reflect.DeepEqual(j.AddTipLabel, []string{"tip"})).Errorf("add_tip_label = %v", j.AddTipLabel)
+	assert(t, j.Output == "markdown").Errorf("output = %q", j.Output)
 }
 
 func TestReadConfigFile_JSONPreferredOverYAML(t *testing.T) {
@@ -96,6 +97,44 @@ func TestLoadFileConfig_NoConfigIsEmpty(t *testing.T) {
 	fc := loadFileConfig(repo, repo)
 	assert(t, fc.AddLabel == nil && fc.AddTipLabel == nil).
 		Errorf("absent config must leave labelling off, got %+v", fc)
+	assert(t, fc.Output == "").
+		Errorf("absent config must leave output unset so the default preset applies, got %q", fc.Output)
+}
+
+func TestLoadFileConfig_OutputPrecedence_GlobalProjectLocal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFile(t, filepath.Join(home, ".config", "git-pr", "config.json"), `{"output":"url"}`)
+
+	repo := t.TempDir()
+	fc := loadFileConfig(repo, repo)
+	assert(t, fc.Output == "url").Errorf("global output should apply, got %q", fc.Output)
+
+	writeFile(t, filepath.Join(repo, ".config", "git-pr.json"), `{"output":"markdown"}`)
+	fc = loadFileConfig(repo, repo)
+	assert(t, fc.Output == "markdown").Errorf("project output should beat global, got %q", fc.Output)
+
+	writeFile(t, filepath.Join(repo, ".config", "git-pr.local.yaml"), "output: '{shorthash} {title}'\n")
+	fc = loadFileConfig(repo, repo)
+	assert(t, fc.Output == "{shorthash} {title}").
+		Errorf("local output should beat project, got %q", fc.Output)
+
+	// whatever wins must still be a template git-pr accepts
+	tmpl, err := resolveOutputFormat(fc.Output)
+	assert(t, err == nil).Fatalf("config output must resolve: %v", err)
+	assert(t, tmpl == "{shorthash} {title}").Errorf("resolved = %q", tmpl)
+}
+
+func TestLoadFileConfig_OutputNearestProjectWins(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, ".config", "git-pr.json"), `{"output":"url"}`)
+	sub := filepath.Join(repo, "a", "b")
+	writeFile(t, filepath.Join(sub, ".config", "git-pr.json"), `{"output":"markdown"}`)
+
+	fc := loadFileConfig(sub, repo)
+	assert(t, fc.Output == "markdown").Errorf("nearest project config should win, got %q", fc.Output)
 }
 
 func TestDedupStrings(t *testing.T) {

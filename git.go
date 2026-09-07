@@ -392,17 +392,6 @@ func shortenTitle(title string) string {
 	}
 }
 
-func deleteBranch(branch string) error {
-	branches, err := git("branch")
-	if err != nil {
-		return err
-	}
-	if strings.Contains(branches, branch+"\n") {
-		_, err = git("branch", "-D", branch) // delete branch
-	}
-	return err
-}
-
 // refSyncAction is what syncLocalRefsAfterPush should do with one local ref.
 type refSyncAction int
 

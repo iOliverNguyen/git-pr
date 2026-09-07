@@ -27,8 +27,8 @@ func TestConfirm(t *testing.T) {
 		if err != nil {
 			t.Fatalf("os.Pipe: %v", err)
 		}
-		defer r.Close()
-		defer w.Close()
+		defer func() { _ = r.Close() }()
+		defer func() { _ = w.Close() }()
 		defer func(s *os.File) { os.Stdin = s }(os.Stdin)
 		os.Stdin = r
 

@@ -222,20 +222,6 @@ func parseCommaList(s string) []string {
 	return out
 }
 
-func panicf(err error, msg string, args ...any) {
-	if err != nil {
-		stderrf("ERROR: %v\n", err)
-	}
-	panic("ERROR: " + fmt.Sprintf(msg, args...))
-}
-
-func xif[T any](cond bool, a, b T) T {
-	if cond {
-		return a
-	}
-	return b
-}
-
 func revert[T any](list []T) []T {
 	out := make([]T, len(list))
 	for i, v := range list {

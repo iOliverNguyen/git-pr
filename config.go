@@ -583,13 +583,6 @@ func expandPath(path string) string {
 	return path
 }
 
-func validateConfig[T comparable](name string, value T) {
-	var zero T
-	if value == zero {
-		exitf("missing config %q", name)
-	}
-}
-
 func getGitPRConfig() []string {
 	rawTags, _ := git("config", "--get", gitconfigTags)
 	return parseCommaList(rawTags)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,10 +11,6 @@ import (
 
 func httpGET(url string) ([]byte, error) {
 	return httpRequest("GET", url, nil)
-}
-
-func httpPOST(url string, body any) ([]byte, error) {
-	return httpRequest("POST", url, body)
 }
 
 func httpRequest(method string, url string, body any) (_ []byte, err error) {
@@ -58,5 +53,5 @@ func httpRequest(method string, url string, body any) (_ []byte, err error) {
 	}
 	printf("failed to call http request: %s %s\n", url, resp.Status)
 	printf("%s\n", string(data))
-	return data, errors.New(fmt.Sprintf("failed to call http request: (%v) %s", resp.Status, data))
+	return data, fmt.Errorf("failed to call http request: (%v) %s", resp.Status, data)
 }

@@ -19,7 +19,7 @@ type execError struct {
 
 func (e *execError) Error() string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("exit code %d", e.exitCode))
+	fmt.Fprintf(&b, "exit code %d", e.exitCode)
 	if e.output != "" {
 		b.WriteString("\n")
 		b.WriteString(strings.TrimSpace(e.output))
@@ -34,7 +34,7 @@ func execCmd(name string, args ...string) (string, error) {
 		for _, arg := range args {
 			b.WriteString(" ")
 			if strings.Contains(arg, " ") {
-				b.WriteString(fmt.Sprintf("%q", arg))
+				fmt.Fprintf(&b, "%q", arg)
 			} else {
 				b.WriteString(arg)
 			}

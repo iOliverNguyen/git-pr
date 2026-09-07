@@ -202,6 +202,24 @@ func isStackNeedsRebuild(out string, err error) bool {
 	return err != nil && strings.Contains(out+err.Error(), "Cannot update stack")
 }
 
+// isStackPushRejected reports whether `gh stack link` failed because its own
+// push of the local branches was *rejected* ("! [rejected] ... (non-fast-forward)").
+// gh-stack pushes the *local* branch refs without --force, so this fires when a
+// local ref no longer descends from what is on the remote — a local branch left
+// behind by a rewrite (see syncLocalRefsAfterPush), or a remote branch someone
+// else moved. It deliberately does not match gh-stack's generic "failed to push
+// branches" wrapper on its own: that also covers auth failures, branch
+// protection, rejecting hooks and network errors, none of which the stale-ref
+// advice would help with. Those fall through to the default case, which prints
+// gh's own output.
+func isStackPushRejected(out string, err error) bool {
+	if err == nil {
+		return false
+	}
+	all := out + err.Error()
+	return strings.Contains(all, "non-fast-forward") || strings.Contains(all, "[rejected]")
+}
+
 // isStackPartiallyUnstacked reports whether `gh stack unstack` left the stack in
 // place. It exits 0 in that case, printing "Some pull requests are queued for
 // merge or have auto-merge enabled and remain stacked on GitHub" — GitHub refuses

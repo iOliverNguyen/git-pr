@@ -725,3 +725,50 @@ Remote-Ref: user/abc123de`
 		assert(t, commit.FullMessage() == want).Errorf("FullMessage() =\n%s\n\nwant:\n%s", commit.FullMessage(), want)
 	})
 }
+
+func TestDecideRefSync(t *testing.T) {
+	const (
+		old    = "1111111111111111111111111111111111111111"
+		pushed = "2222222222222222222222222222222222222222"
+	)
+	cases := []struct {
+		name        string
+		local       string
+		fastForward bool
+		sameChange  bool
+		want        refSyncAction
+	}{
+		{"already there", pushed, false, false, refSyncNothing},
+		{"already there, ancestry irrelevant", pushed, true, true, refSyncNothing},
+		// the bug this exists for: the rewrite phase re-created the change, the
+		// bookmark still names the pre-rewrite commit
+		{"same change, sideways", old, false, true, refSyncMove},
+		{"plain fast-forward", old, true, false, refSyncMove},
+		// a Remote-Ref hand-written to a name the user already uses, with their
+		// branch ahead of the commit we pushed: moving would drop commits
+		{"unrelated branch sharing the name", old, false, false, refSyncUnrelated},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decideRefSync(tc.local, pushed, tc.fastForward, tc.sameChange)
+			if got != tc.want {
+				t.Errorf("decideRefSync(%v, %v, ff=%v, same=%v) = %v, want %v",
+					shortHash(tc.local), shortHash(pushed), tc.fastForward, tc.sameChange, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestShortHash(t *testing.T) {
+	cases := map[string]string{
+		"":             "",
+		"abc":          "abc",
+		"1234567890ab": "1234567890ab",
+		"1111111111111111111111111111111111111111": "111111111111",
+	}
+	for in, want := range cases {
+		if got := shortHash(in); got != want {
+			t.Errorf("shortHash(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

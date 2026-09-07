@@ -304,6 +304,12 @@ actually wrote. Re-run git-pr; if it recurs, file an issue with the output of
 	}
 	parallelForEach(pushFns, func(fn func()) { fn() })
 
+	// keep local refs in step with what we just pushed, so a later non-force
+	// push of the same branch (gh stack link does one) is not rejected
+	if !config.dryRun {
+		syncLocalRefsAfterPush(stackedCommits)
+	}
+
 	// A base edit can be blocked because a PR is already in a native stack;
 	// githubPRUpdateBaseForCommit records that on commit.BaseBlocked instead of
 	// crashing. With --no-stack we don't manage the stack, so warn that the base
@@ -497,6 +503,16 @@ func manageNativeStack(commits []*Commit) {
 				"the whole stack with: gh stack unstack %d && gh stack link %s",
 				stackNumber, strings.Join(branches, " "))
 		}
+	case isStackPushRejected(out, err):
+		// gh-stack pushes the local branch refs, not the commits git-pr pushed
+		exitf("ERROR: gh stack link could not push the stack branches: %v\n\n"+
+			"One of these local refs no longer descends from the remote branch of the same\n"+
+			"name, so gh-stack's (non-forced) push was rejected: %s\n"+
+			"Your commits are already on the remote — git-pr force-pushed them above — so only\n"+
+			"the stack linkage is missing. Bring the local refs up to date (in jj:\n"+
+			"`jj git import`, then `jj bookmark set <name> -r <commit>`) and re-run git-pr, or\n"+
+			"link the stack by hand with: gh stack link %s",
+			err, strings.Join(branches, " "), strings.Join(branches, " "))
 	default:
 		// err already carries gh's output (see execError.Error), so don't print `out` too
 		exitf("ERROR: gh stack link failed: %v", err)

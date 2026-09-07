@@ -272,6 +272,15 @@ func maxAttrsLength(attrs []KeyVal) int {
 
 var rePrefixNewline = regexp.MustCompile(`^\n *`)
 
+// shortHash abbreviates a git commit hash for display, tolerating a value that
+// is already short or empty.
+func shortHash(hash string) string {
+	if len(hash) > 12 {
+		return hash[:12]
+	}
+	return hash
+}
+
 func trimPrefixNewline(s string) string {
 	return rePrefixNewline.ReplaceAllString(s, "")
 }

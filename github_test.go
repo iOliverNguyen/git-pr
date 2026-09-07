@@ -152,3 +152,35 @@ func TestGhStackReason(t *testing.T) {
 		})
 	}
 }
+
+func TestIsStackPushRejected(t *testing.T) {
+	// the real shape gh-stack returned when it pushed a stale local branch
+	realOut := `Checking existing stacks...
+Pushing 1 branch to origin...
+✗ failed to push branches: failed to run git: error: atomic push failed for ref refs/heads/iOliverNguyen/cda2b4d7. status: 2
+ ! [rejected]                iOliverNguyen/cda2b4d7 -> iOliverNguyen/cda2b4d7 (non-fast-forward)`
+
+	cases := []struct {
+		name string
+		out  string
+		err  error
+		want bool
+	}{
+		{"success", realOut, nil, false},
+		{"real gh-stack rejection", realOut, &execError{exitCode: 1, output: realOut}, true},
+		{"rejection only in err", "", &execError{exitCode: 1, output: "! [rejected] x -> x (non-fast-forward)"}, true},
+		// the generic wrapper alone is not a rejection: it also covers auth,
+		// branch protection and network failures
+		{"failed to push wording alone", "", &execError{exitCode: 1, output: "✗ failed to push branches: boom"}, false},
+		{"auth failure", "", &execError{exitCode: 1, output: "✗ failed to push branches: fatal: Authentication failed"}, false},
+		{"needs rebuild is not a push failure", "✗ Cannot update stack: this would remove #1", &execError{exitCode: 1}, false},
+		{"unrelated", "", &execError{exitCode: 1, output: "HTTP 502"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isStackPushRejected(tc.out, tc.err); got != tc.want {
+				t.Errorf("isStackPushRejected() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

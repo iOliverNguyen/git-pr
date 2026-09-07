@@ -402,3 +402,191 @@ func deleteBranch(branch string) error {
 	}
 	return err
 }
+
+// refSyncAction is what syncLocalRefsAfterPush should do with one local ref.
+type refSyncAction int
+
+const (
+	refSyncNothing   refSyncAction = iota // already on the pushed commit
+	refSyncMove                           // safe to move onto the pushed commit
+	refSyncUnrelated                      // shares the name only; moving would drop commits
+)
+
+// decideRefSync decides whether a local ref that shares a name with a Remote-Ref
+// may be moved onto the commit we just pushed. Sharing the name is not enough:
+// a Remote-Ref can be hand-written to a name the user already uses for a branch
+// of their own, and pushing a sub-range can put the pushed commit *behind* it.
+// Moving is safe in exactly two shapes — a fast-forward, or the same jj change
+// re-created by the rewrite phase (the stale-bookmark case this whole function
+// exists for). Anything else is left alone and reported.
+func decideRefSync(local, pushed string, fastForward, sameChange bool) refSyncAction {
+	switch {
+	case local == pushed:
+		return refSyncNothing
+	case fastForward, sameChange:
+		return refSyncMove
+	default:
+		return refSyncUnrelated
+	}
+}
+
+// isFastForward reports whether moving a ref from `from` to `to` only adds
+// commits, i.e. `from` is an ancestor of `to`.
+func isFastForward(from, to string) bool {
+	_, err := git("merge-base", "--is-ancestor", from, to)
+	return err == nil
+}
+
+// jjBookmarkTargets returns the commit ids a local jj bookmark points at: none
+// if it does not exist, one normally, and several when the bookmark is in a
+// conflicted state (jj shows those as `name??`).
+func jjBookmarkTargets(name string) []string {
+	out, err := jj("log", "-r", fmt.Sprintf("bookmarks(exact:%q)", name), "--no-graph", "-T", `commit_id ++ "\n"`)
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); len(line) == 40 {
+			ids = append(ids, line)
+		}
+	}
+	return ids
+}
+
+// checkedOutBranches returns every branch checked out in any worktree of this
+// repo. Rewinding one of those with `update-ref` is not refused the way
+// `git branch -f` would be, and leaves that worktree looking entirely dirty.
+func checkedOutBranches() map[string]bool {
+	out, err := git("worktree", "list", "--porcelain")
+	if err != nil {
+		return nil
+	}
+	branches := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		if ref, ok := strings.CutPrefix(strings.TrimSpace(line), "branch refs/heads/"); ok {
+			branches[ref] = true
+		}
+	}
+	return branches
+}
+
+// syncLocalRefsAfterPush points any *pre-existing* local ref that shares a name
+// with a Remote-Ref we just pushed at the commit we pushed. git-pr pushes
+// `<hash>:refs/heads/<ref>` and otherwise never touches local refs, so a local
+// branch (or jj bookmark) of that name keeps pointing at the pre-rewrite commit.
+// `gh stack link` then pushes that stale local branch *without* --force and git
+// rejects the whole atomic push as a non-fast-forward — which reads as a
+// mysterious "tip is behind its remote counterpart" for a stack whose remote is
+// in fact exactly what we wanted.
+//
+// Only refs that already exist are moved, and only when decideRefSync says the
+// move cannot drop commits: git-pr does not own the Remote-Ref namespace
+// locally, must not leave a branch per PR behind in a repo that had none, and
+// must not rewind a branch that merely shares a name. Every failure is a
+// warning, never fatal — the push itself already succeeded and nothing
+// downstream reads the local ref.
+func syncLocalRefsAfterPush(commits []*Commit) {
+	var moved bool
+	var checkedOut map[string]bool
+	if !config.jj.enabled {
+		checkedOut = checkedOutBranches()
+	}
+	for _, commit := range commits {
+		if commit.Skip {
+			continue
+		}
+		name := commit.GetRemoteRef()
+		if name == "" {
+			continue
+		}
+		if config.jj.enabled {
+			syncJJBookmarkAfterPush(name, commit, &moved)
+			continue
+		}
+		local, err := resolveRef("refs/heads/" + name)
+		if err != nil || local == "" {
+			continue // no local branch by that name, nothing to sync
+		}
+		sameChange := false // git mode has no stable identity across a rewrite
+		switch decideRefSync(local, commit.Hash, isFastForward(local, commit.Hash), sameChange) {
+		case refSyncNothing:
+			continue
+		case refSyncUnrelated:
+			warnf("local branch %v points at %v, which is not an ancestor of the pushed %v;\n"+
+				"  leaving it alone (a later non-forced push of it will be rejected)",
+				name, shortHash(local), commit.ShortHash())
+			continue
+		}
+		if checkedOut[name] {
+			// moving a checked-out branch would leave that worktree looking
+			// like it had uncommitted changes
+			warnf("local branch %v is checked out at %v, not the pushed %v;\n"+
+				"  leaving it alone", name, shortHash(local), commit.ShortHash())
+			continue
+		}
+		debugf("moving local branch %v to %v (was %v)", name, commit.ShortHash(), shortHash(local))
+		if _, err := git("update-ref", "refs/heads/"+name, commit.Hash, local); err != nil {
+			warnf("could not move local branch %v onto the pushed commit %v: %v\n"+
+				"  the push succeeded; the local branch is stale", name, commit.ShortHash(), err)
+		}
+	}
+	if moved {
+		// jj auto-exports after each operation, so this is normally a no-op; it
+		// is here to surface the case where an export could *not* happen (a git
+		// ref moved behind jj's back), which would leave gh-stack reading the
+		// stale ref and reproduce the very bug this function fixes
+		if out, err := jj("git", "export"); err != nil || strings.Contains(out, "Failed to export") {
+			warnf("jj could not export every bookmark to a git ref: %v\n%v", err, out)
+		}
+	}
+}
+
+// syncJJBookmarkAfterPush is the jj half of syncLocalRefsAfterPush: it moves the
+// bookmark through jj rather than writing refs/heads, so jj's view stays
+// authoritative instead of being reverted by its next export. It sets *moved
+// whenever an export is worth running afterwards.
+func syncJJBookmarkAfterPush(name string, commit *Commit, moved *bool) {
+	targets := jjBookmarkTargets(name)
+	if len(targets) == 0 {
+		return // no local bookmark by that name, nothing to sync
+	}
+	if len(targets) > 1 {
+		// a conflicted bookmark has two sides; `bookmark set` would silently
+		// collapse it onto ours and drop the other
+		short := make([]string, len(targets))
+		for i, t := range targets {
+			short[i] = shortHash(t)
+		}
+		warnf("jj bookmark %v is conflicted (%v);\n"+
+			"  leaving it alone — resolve it with `jj bookmark set %v -r <rev>`",
+			name, strings.Join(short, ", "), name)
+		return
+	}
+	local := targets[0]
+	if local == commit.Hash {
+		// the bookmark is right; the git ref it exports to may still be stale
+		if ref, err := resolveRef("refs/heads/" + name); err == nil && ref != commit.Hash {
+			*moved = true
+		}
+		return
+	}
+	sameChange := false
+	if id, err := jjGetChangeID(local); err == nil && id != "" && commit.ChangeID != "" {
+		sameChange = id == commit.ChangeID
+	}
+	if decideRefSync(local, commit.Hash, isFastForward(local, commit.Hash), sameChange) == refSyncUnrelated {
+		warnf("jj bookmark %v points at %v, a different change than the pushed %v;\n"+
+			"  leaving it alone (a later non-forced push of it will be rejected)",
+			name, shortHash(local), commit.ShortHash())
+		return
+	}
+	debugf("moving jj bookmark %v to %v (was %v)", name, commit.ShortHash(), shortHash(local))
+	// --allow-backwards: a rewritten commit is rarely a descendant of the old one
+	if _, err := jj("bookmark", "set", name, "-r", commit.Hash, "--allow-backwards"); err != nil {
+		warnf("could not move jj bookmark %v onto the pushed commit %v: %v\n"+
+			"  the push succeeded; the local bookmark is stale", name, commit.ShortHash(), err)
+		return
+	}
+	*moved = true
+}
